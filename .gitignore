@@ -47,6 +47,9 @@ secrets.json
 ## Aspire
 .aspire/
 
+## Notes
+discussion*.txt
+
 ## OS
 Thumbs.db
 ehthumbs.db

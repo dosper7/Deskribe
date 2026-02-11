@@ -14,7 +14,7 @@
     "kafka.messaging": "pulumi"
   },
   "policies": {
-    "allowedRegions": ["westeurope", "northeurope"],
+    "allowedRegions": ["westeurope", "northeurope", "eastus2"],
     "enforceTLS": true
   }
 }

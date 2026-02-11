@@ -102,9 +102,13 @@ public static class DeskribeAspireExtensions
         var serverName = $"{appName}-postgres";
         var dbName = $"{appName}-db";
 
-        var server = builder.AddPostgres(serverName)
-            .WithPgAdmin()
-            .WithLifetime(ContainerLifetime.Persistent);
+        var server = builder.AddPostgres(serverName);
+
+        if (pgResource?.Version is { } version)
+            server = server.WithImageTag(version);
+
+        server = server.WithPgAdmin();
+        server = server.WithLifetime(ContainerLifetime.Persistent);
 
         var db = server.AddDatabase(dbName);
 
@@ -121,9 +125,13 @@ public static class DeskribeAspireExtensions
     {
         var name = $"{appName}-redis";
 
-        var redis = builder.AddRedis(name)
-            .WithRedisInsight()
-            .WithLifetime(ContainerLifetime.Persistent);
+        var redis = builder.AddRedis(name);
+
+        if (redisResource?.Version is { } version)
+            redis = redis.WithImageTag(version);
+
+        redis = redis.WithRedisInsight();
+        redis = redis.WithLifetime(ContainerLifetime.Persistent);
 
         map.AddConnectionStringResource(redis);
         map.AddWaitForResource(redis);
@@ -138,9 +146,10 @@ public static class DeskribeAspireExtensions
     {
         var name = $"{appName}-kafka";
 
-        var kafka = builder.AddKafka(name)
-            .WithKafkaUI()
-            .WithLifetime(ContainerLifetime.Persistent);
+        var kafka = builder.AddKafka(name);
+
+        kafka = kafka.WithKafkaUI();
+        kafka = kafka.WithLifetime(ContainerLifetime.Persistent);
 
         map.AddConnectionStringResource(kafka);
         map.AddWaitForResource(kafka);

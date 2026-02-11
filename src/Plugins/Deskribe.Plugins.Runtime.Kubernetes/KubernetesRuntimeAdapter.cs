@@ -1,141 +1,297 @@
-using System.Text;
 using Deskribe.Sdk;
+using k8s;
+using k8s.Models;
 
 namespace Deskribe.Plugins.Runtime.Kubernetes;
 
 public class KubernetesRuntimeAdapter : IRuntimeAdapter
 {
+    private readonly KubernetesClientConfiguration? _config;
+
+    public KubernetesRuntimeAdapter(KubernetesClientConfiguration? config = null)
+    {
+        _config = config;
+    }
+
     public string Name => "kubernetes";
 
-    public Task<WorkloadManifest> RenderAsync(WorkloadPlan workload, CancellationToken ct)
+    public Task<WorkloadManifest> RenderAsync(WorkloadPlan workload, CancellationToken ct = default)
     {
-        var sb = new StringBuilder();
+        var resources = new List<object>();
+        var resourceNames = new List<string>();
 
-        // Namespace
-        sb.AppendLine("---");
-        sb.AppendLine("apiVersion: v1");
-        sb.AppendLine("kind: Namespace");
-        sb.AppendLine("metadata:");
-        sb.AppendLine($"  name: {workload.Namespace}");
-        sb.AppendLine("  labels:");
-        sb.AppendLine($"    app.kubernetes.io/managed-by: deskribe");
-
-        // Secret for env vars (if any non-reference env vars)
-        if (workload.EnvironmentVariables.Count > 0)
+        // --- Namespace ---
+        var ns = new V1Namespace
         {
-            sb.AppendLine("---");
-            sb.AppendLine("apiVersion: v1");
-            sb.AppendLine("kind: Secret");
-            sb.AppendLine("metadata:");
-            sb.AppendLine($"  name: {workload.AppName}-env");
-            sb.AppendLine($"  namespace: {workload.Namespace}");
-            sb.AppendLine("type: Opaque");
-            sb.AppendLine("stringData:");
-            foreach (var (key, value) in workload.EnvironmentVariables)
+            ApiVersion = "v1",
+            Kind = "Namespace",
+            Metadata = new V1ObjectMeta
             {
-                sb.AppendLine($"  {key}: \"{EscapeYaml(value)}\"");
+                Name = workload.Namespace,
+                Labels = new Dictionary<string, string>
+                {
+                    ["app.kubernetes.io/managed-by"] = "deskribe"
+                }
             }
-        }
+        };
+        resources.Add(ns);
+        resourceNames.Add($"Namespace/{workload.Namespace}");
 
-        // Deployment
-        sb.AppendLine("---");
-        sb.AppendLine("apiVersion: apps/v1");
-        sb.AppendLine("kind: Deployment");
-        sb.AppendLine("metadata:");
-        sb.AppendLine($"  name: {workload.AppName}");
-        sb.AppendLine($"  namespace: {workload.Namespace}");
-        sb.AppendLine("  labels:");
-        sb.AppendLine($"    app: {workload.AppName}");
-        sb.AppendLine($"    app.kubernetes.io/managed-by: deskribe");
-        sb.AppendLine("spec:");
-        sb.AppendLine($"  replicas: {workload.Replicas}");
-        sb.AppendLine("  selector:");
-        sb.AppendLine("    matchLabels:");
-        sb.AppendLine($"      app: {workload.AppName}");
-        sb.AppendLine("  template:");
-        sb.AppendLine("    metadata:");
-        sb.AppendLine("      labels:");
-        sb.AppendLine($"        app: {workload.AppName}");
-        sb.AppendLine("    spec:");
-        sb.AppendLine("      containers:");
-        sb.AppendLine($"      - name: {workload.AppName}");
-        sb.AppendLine($"        image: {workload.Image ?? "nginx:latest"}");
-        sb.AppendLine("        resources:");
-        sb.AppendLine("          requests:");
-        sb.AppendLine($"            cpu: {workload.Cpu}");
-        sb.AppendLine($"            memory: {workload.Memory}");
-        sb.AppendLine("          limits:");
-        sb.AppendLine($"            cpu: {workload.Cpu}");
-        sb.AppendLine($"            memory: {workload.Memory}");
-
+        // --- Secret (if env vars exist) ---
         if (workload.EnvironmentVariables.Count > 0)
         {
-            sb.AppendLine("        envFrom:");
-            sb.AppendLine($"        - secretRef:");
-            sb.AppendLine($"            name: {workload.AppName}-env");
+            var secret = new V1Secret
+            {
+                ApiVersion = "v1",
+                Kind = "Secret",
+                Metadata = new V1ObjectMeta
+                {
+                    Name = $"{workload.AppName}-env",
+                    NamespaceProperty = workload.Namespace
+                },
+                Type = "Opaque",
+                StringData = new Dictionary<string, string>(workload.EnvironmentVariables)
+            };
+            resources.Add(secret);
+            resourceNames.Add($"Secret/{workload.Namespace}/{workload.AppName}-env");
         }
 
-        sb.AppendLine("        ports:");
-        sb.AppendLine("        - containerPort: 8080");
-        sb.AppendLine("          name: http");
-
-        // Service
-        sb.AppendLine("---");
-        sb.AppendLine("apiVersion: v1");
-        sb.AppendLine("kind: Service");
-        sb.AppendLine("metadata:");
-        sb.AppendLine($"  name: {workload.AppName}");
-        sb.AppendLine($"  namespace: {workload.Namespace}");
-        sb.AppendLine("spec:");
-        sb.AppendLine("  selector:");
-        sb.AppendLine($"    app: {workload.AppName}");
-        sb.AppendLine("  ports:");
-        sb.AppendLine("  - port: 80");
-        sb.AppendLine("    targetPort: 8080");
-        sb.AppendLine("    name: http");
-
-        var resourceNames = new List<string>
+        // --- Deployment ---
+        var appLabels = new Dictionary<string, string>
         {
-            $"Namespace/{workload.Namespace}",
-            $"Deployment/{workload.Namespace}/{workload.AppName}",
-            $"Service/{workload.Namespace}/{workload.AppName}"
+            ["app"] = workload.AppName
+        };
+
+        var container = new V1Container
+        {
+            Name = workload.AppName,
+            Image = workload.Image ?? "nginx:latest",
+            Ports = new List<V1ContainerPort>
+            {
+                new()
+                {
+                    ContainerPort = 8080,
+                    Name = "http"
+                }
+            },
+            Resources = new V1ResourceRequirements
+            {
+                Requests = new Dictionary<string, ResourceQuantity>
+                {
+                    ["cpu"] = new ResourceQuantity(workload.Cpu),
+                    ["memory"] = new ResourceQuantity(workload.Memory)
+                },
+                Limits = new Dictionary<string, ResourceQuantity>
+                {
+                    ["cpu"] = new ResourceQuantity(workload.Cpu),
+                    ["memory"] = new ResourceQuantity(workload.Memory)
+                }
+            }
         };
 
         if (workload.EnvironmentVariables.Count > 0)
-            resourceNames.Insert(1, $"Secret/{workload.Namespace}/{workload.AppName}-env");
+        {
+            container.EnvFrom = new List<V1EnvFromSource>
+            {
+                new()
+                {
+                    SecretRef = new V1SecretEnvSource
+                    {
+                        Name = $"{workload.AppName}-env"
+                    }
+                }
+            };
+        }
+
+        var deployment = new V1Deployment
+        {
+            ApiVersion = "apps/v1",
+            Kind = "Deployment",
+            Metadata = new V1ObjectMeta
+            {
+                Name = workload.AppName,
+                NamespaceProperty = workload.Namespace,
+                Labels = new Dictionary<string, string>
+                {
+                    ["app"] = workload.AppName,
+                    ["app.kubernetes.io/managed-by"] = "deskribe"
+                }
+            },
+            Spec = new V1DeploymentSpec
+            {
+                Replicas = workload.Replicas,
+                Selector = new V1LabelSelector
+                {
+                    MatchLabels = appLabels
+                },
+                Template = new V1PodTemplateSpec
+                {
+                    Metadata = new V1ObjectMeta
+                    {
+                        Labels = new Dictionary<string, string>(appLabels)
+                    },
+                    Spec = new V1PodSpec
+                    {
+                        Containers = new List<V1Container> { container }
+                    }
+                }
+            }
+        };
+        resources.Add(deployment);
+        resourceNames.Add($"Deployment/{workload.Namespace}/{workload.AppName}");
+
+        // --- Service ---
+        var service = new V1Service
+        {
+            ApiVersion = "v1",
+            Kind = "Service",
+            Metadata = new V1ObjectMeta
+            {
+                Name = workload.AppName,
+                NamespaceProperty = workload.Namespace
+            },
+            Spec = new V1ServiceSpec
+            {
+                Selector = new Dictionary<string, string>(appLabels),
+                Ports = new List<V1ServicePort>
+                {
+                    new()
+                    {
+                        Port = 80,
+                        TargetPort = 8080,
+                        Name = "http"
+                    }
+                }
+            }
+        };
+        resources.Add(service);
+        resourceNames.Add($"Service/{workload.Namespace}/{workload.AppName}");
+
+        // Serialize all resources to YAML separated by ---
+        var yamlDocuments = resources.Select(r => KubernetesYaml.Serialize(r));
+        var yaml = string.Join("---\n", yamlDocuments);
 
         return Task.FromResult(new WorkloadManifest
         {
             Namespace = workload.Namespace,
-            Yaml = sb.ToString(),
+            Yaml = yaml,
             ResourceNames = resourceNames
         });
     }
 
-    public Task ApplyAsync(WorkloadManifest manifest, CancellationToken ct)
+    public async Task ApplyAsync(WorkloadManifest manifest, CancellationToken ct = default)
     {
-        // MVP: Print what would be applied
-        // In production, this would use KubernetesClient to apply the manifest
-        Console.WriteLine($"[Kubernetes] Would apply to namespace: {manifest.Namespace}");
-        Console.WriteLine($"[Kubernetes] Resources:");
-        foreach (var name in manifest.ResourceNames)
+        try
         {
-            Console.WriteLine($"  - {name}");
+            var config = _config ?? KubernetesClientConfiguration.BuildDefaultConfig();
+            var client = new k8s.Kubernetes(config);
+
+            var objects = KubernetesYaml.LoadAllFromString(manifest.Yaml);
+
+            foreach (var obj in objects)
+            {
+                switch (obj)
+                {
+                    case V1Namespace ns:
+                        try
+                        {
+                            await client.ReadNamespaceAsync(ns.Metadata.Name, cancellationToken: ct);
+                            await client.PatchNamespaceAsync(
+                                new V1Patch(ns, V1Patch.PatchType.MergePatch),
+                                ns.Metadata.Name,
+                                cancellationToken: ct);
+                            Console.WriteLine($"[Kubernetes] Updated Namespace/{ns.Metadata.Name}");
+                        }
+                        catch (k8s.Autorest.HttpOperationException ex) when (ex.Response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                        {
+                            await client.CreateNamespaceAsync(ns, cancellationToken: ct);
+                            Console.WriteLine($"[Kubernetes] Created Namespace/{ns.Metadata.Name}");
+                        }
+                        break;
+
+                    case V1Secret secret:
+                        try
+                        {
+                            await client.ReadNamespacedSecretAsync(secret.Metadata.Name, secret.Metadata.NamespaceProperty, cancellationToken: ct);
+                            await client.ReplaceNamespacedSecretAsync(secret, secret.Metadata.Name, secret.Metadata.NamespaceProperty, cancellationToken: ct);
+                            Console.WriteLine($"[Kubernetes] Updated Secret/{secret.Metadata.NamespaceProperty}/{secret.Metadata.Name}");
+                        }
+                        catch (k8s.Autorest.HttpOperationException ex) when (ex.Response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                        {
+                            await client.CreateNamespacedSecretAsync(secret, secret.Metadata.NamespaceProperty, cancellationToken: ct);
+                            Console.WriteLine($"[Kubernetes] Created Secret/{secret.Metadata.NamespaceProperty}/{secret.Metadata.Name}");
+                        }
+                        break;
+
+                    case V1Deployment deployment:
+                        try
+                        {
+                            await client.ReadNamespacedDeploymentAsync(deployment.Metadata.Name, deployment.Metadata.NamespaceProperty, cancellationToken: ct);
+                            await client.ReplaceNamespacedDeploymentAsync(deployment, deployment.Metadata.Name, deployment.Metadata.NamespaceProperty, cancellationToken: ct);
+                            Console.WriteLine($"[Kubernetes] Updated Deployment/{deployment.Metadata.NamespaceProperty}/{deployment.Metadata.Name}");
+                        }
+                        catch (k8s.Autorest.HttpOperationException ex) when (ex.Response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                        {
+                            await client.CreateNamespacedDeploymentAsync(deployment, deployment.Metadata.NamespaceProperty, cancellationToken: ct);
+                            Console.WriteLine($"[Kubernetes] Created Deployment/{deployment.Metadata.NamespaceProperty}/{deployment.Metadata.Name}");
+                        }
+                        break;
+
+                    case V1Service service:
+                        try
+                        {
+                            await client.ReadNamespacedServiceAsync(service.Metadata.Name, service.Metadata.NamespaceProperty, cancellationToken: ct);
+                            await client.ReplaceNamespacedServiceAsync(service, service.Metadata.Name, service.Metadata.NamespaceProperty, cancellationToken: ct);
+                            Console.WriteLine($"[Kubernetes] Updated Service/{service.Metadata.NamespaceProperty}/{service.Metadata.Name}");
+                        }
+                        catch (k8s.Autorest.HttpOperationException ex) when (ex.Response.StatusCode == System.Net.HttpStatusCode.NotFound)
+                        {
+                            await client.CreateNamespacedServiceAsync(service, service.Metadata.NamespaceProperty, cancellationToken: ct);
+                            Console.WriteLine($"[Kubernetes] Created Service/{service.Metadata.NamespaceProperty}/{service.Metadata.Name}");
+                        }
+                        break;
+
+                    default:
+                        Console.WriteLine($"[Kubernetes] Skipping unknown resource type: {obj.GetType().Name}");
+                        break;
+                }
+            }
         }
-        Console.WriteLine();
-        Console.WriteLine(manifest.Yaml);
-
-        return Task.CompletedTask;
+        catch (k8s.Exceptions.KubeConfigException ex)
+        {
+            Console.WriteLine($"[Kubernetes] No cluster configuration available: {ex.Message}");
+            Console.WriteLine($"[Kubernetes] Rendered manifest for namespace '{manifest.Namespace}' with {manifest.ResourceNames.Count} resources (dry-run).");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Console.WriteLine($"[Kubernetes] Failed to apply to cluster: {ex.Message}");
+            Console.WriteLine($"[Kubernetes] Rendered manifest for namespace '{manifest.Namespace}' with {manifest.ResourceNames.Count} resources (dry-run).");
+        }
     }
 
-    public Task DestroyAsync(string namespaceName, CancellationToken ct)
+    public async Task DestroyAsync(string namespaceName, CancellationToken ct = default)
     {
-        Console.WriteLine($"[Kubernetes] Would delete namespace: {namespaceName}");
-        return Task.CompletedTask;
-    }
+        try
+        {
+            var config = _config ?? KubernetesClientConfiguration.BuildDefaultConfig();
+            var client = new k8s.Kubernetes(config);
 
-    private static string EscapeYaml(string value)
-    {
-        return value.Replace("\\", "\\\\").Replace("\"", "\\\"");
+            await client.DeleteNamespaceAsync(namespaceName, cancellationToken: ct);
+            Console.WriteLine($"[Kubernetes] Deleted Namespace/{namespaceName}");
+        }
+        catch (k8s.Exceptions.KubeConfigException ex)
+        {
+            Console.WriteLine($"[Kubernetes] No cluster configuration available: {ex.Message}");
+            Console.WriteLine($"[Kubernetes] Would delete namespace: {namespaceName} (dry-run).");
+        }
+        catch (k8s.Autorest.HttpOperationException ex) when (ex.Response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            Console.WriteLine($"[Kubernetes] Namespace '{namespaceName}' not found, nothing to delete.");
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Console.WriteLine($"[Kubernetes] Failed to delete namespace: {ex.Message}");
+            Console.WriteLine($"[Kubernetes] Would delete namespace: {namespaceName} (dry-run).");
+        }
     }
 }

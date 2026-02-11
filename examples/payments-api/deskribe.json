@@ -1,7 +1,7 @@
 {
   "name": "payments-api",
   "resources": [
-    { "type": "postgres", "size": "m" },
+    { "type": "postgres", "size": "m", "version": "16" },
     { "type": "redis" },
     {
       "type": "kafka.messaging",
