@@ -1,0 +1,92 @@
+@page "/resources"
+@using Deskribe.Web.Services
+@inject DeskribeUiService UiService
+@rendermode InteractiveServer
+
+<PageTitle>Resources - Deskribe</PageTitle>
+
+<div class="page-header">
+    <h1>Resources</h1>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <span class="stat-label">Postgres</span>
+        <span class="stat-value text-blue">@postgresCount</span>
+        <span class="stat-detail">Bitnami Helm Chart</span>
+    </div>
+    <div class="stat-card">
+        <span class="stat-label">Redis</span>
+        <span class="stat-value text-orange">@redisCount</span>
+        <span class="stat-detail">Bitnami Helm Chart</span>
+    </div>
+    <div class="stat-card">
+        <span class="stat-label">Kafka</span>
+        <span class="stat-value text-purple">@kafkaCount</span>
+        <span class="stat-detail">Bitnami Helm Chart</span>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3>All Resources</h3>
+    </div>
+    <div class="card-body" style="padding: 0;">
+        <table class="resource-table">
+            <thead>
+                <tr>
+                    <th>Application</th>
+                    <th>Type</th>
+                    <th>Size</th>
+                    <th>Backend</th>
+                    <th>Status</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var (appName, manifest) in manifests)
+                {
+                    @foreach (var r in manifest.Resources)
+                    {
+                        <tr>
+                            <td style="font-weight: 600;">@appName</td>
+                            <td><span class="badge badge-resource">@r.Type</span></td>
+                            <td>@(r.Size ?? "default")</td>
+                            <td>@(platformConfig?.Backends.GetValueOrDefault(r.Type) ?? "—")</td>
+                            <td><span class="badge badge-healthy"><span class="status-dot healthy"></span> Ready</span></td>
+                        </tr>
+                    }
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    private Dictionary<string, Deskribe.Sdk.Models.DeskribeManifest> manifests = new();
+    private Deskribe.Sdk.Models.PlatformConfig? platformConfig;
+    private int postgresCount, redisCount, kafkaCount;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var apps = UiService.GetApplications();
+        foreach (var app in apps)
+        {
+            try
+            {
+                manifests[app.Name] = await UiService.GetManifestAsync(app.Name);
+                platformConfig ??= await UiService.GetPlatformConfigAsync(app.Name);
+            }
+            catch { }
+        }
+
+        foreach (var (_, m) in manifests)
+        {
+            foreach (var r in m.Resources)
+            {
+                if (r.Type == "postgres") postgresCount++;
+                else if (r.Type == "redis") redisCount++;
+                else if (r.Type.Contains("kafka")) kafkaCount++;
+            }
+        }
+    }
+}

@@ -1,0 +1,22 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Deskribe.AppHost/Deskribe.AppHost.csproj" />
+    <Project Path="src/Deskribe.Aspire/Deskribe.Aspire.csproj" />
+    <Project Path="src/Deskribe.Cli/Deskribe.Cli.csproj" />
+    <Project Path="src/Deskribe.Core/Deskribe.Core.csproj" />
+    <Project Path="src/Deskribe.Sdk/Deskribe.Sdk.csproj" />
+    <Project Path="src/Deskribe.ServiceDefaults/Deskribe.ServiceDefaults.csproj" />
+    <Project Path="src/Deskribe.Web/Deskribe.Web.csproj" />
+  </Folder>
+  <Folder Name="/src/Plugins/">
+    <Project Path="src/Plugins/Deskribe.Plugins.Backend.Pulumi/Deskribe.Plugins.Backend.Pulumi.csproj" />
+    <Project Path="src/Plugins/Deskribe.Plugins.Resources.Kafka/Deskribe.Plugins.Resources.Kafka.csproj" />
+    <Project Path="src/Plugins/Deskribe.Plugins.Resources.Postgres/Deskribe.Plugins.Resources.Postgres.csproj" />
+    <Project Path="src/Plugins/Deskribe.Plugins.Resources.Redis/Deskribe.Plugins.Resources.Redis.csproj" />
+    <Project Path="src/Plugins/Deskribe.Plugins.Runtime.Kubernetes/Deskribe.Plugins.Runtime.Kubernetes.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Deskribe.Core.Tests/Deskribe.Core.Tests.csproj" />
+    <Project Path="tests/Deskribe.Plugins.Tests/Deskribe.Plugins.Tests.csproj" />
+  </Folder>
+</Solution>

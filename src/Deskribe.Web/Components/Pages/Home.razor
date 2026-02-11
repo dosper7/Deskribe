@@ -1,0 +1,94 @@
+@page "/"
+@using Deskribe.Web.Services
+@inject DeskribeUiService UiService
+@rendermode InteractiveServer
+
+<PageTitle>Deskribe - Dashboard</PageTitle>
+
+<div class="page-header">
+    <h1>Dashboard</h1>
+    <span class="text-muted">Overview of your infrastructure</span>
+</div>
+
+<div class="stats-grid">
+    <div class="stat-card">
+        <span class="stat-label">Applications</span>
+        <span class="stat-value">@apps.Count</span>
+        <span class="stat-detail">Registered services</span>
+    </div>
+    <div class="stat-card">
+        <span class="stat-label">Environments</span>
+        <span class="stat-value">@totalEnvs</span>
+        <span class="stat-detail">dev, prod</span>
+    </div>
+    <div class="stat-card">
+        <span class="stat-label">Resources</span>
+        <span class="stat-value">@totalResources</span>
+        <span class="stat-detail">Postgres, Redis, Kafka</span>
+    </div>
+    <div class="stat-card">
+        <span class="stat-label">Status</span>
+        <span class="stat-value text-green">Healthy</span>
+        <span class="stat-detail">All systems operational</span>
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <h3>Applications</h3>
+    </div>
+    <div class="card-body">
+        <div class="app-grid">
+            @foreach (var app in apps)
+            {
+                <a href="plan/@app.Name/dev" style="text-decoration: none;">
+                    <div class="app-card">
+                        <div class="app-card-header">
+                            <span class="app-card-name">@app.Name</span>
+                            <span class="badge badge-healthy"><span class="status-dot healthy"></span> Synced</span>
+                        </div>
+                        <div class="app-card-resources">
+                            @if (manifests.TryGetValue(app.Name, out var manifest))
+                            {
+                                @foreach (var r in manifest.Resources)
+                                {
+                                    <span class="badge badge-resource">@r.Type</span>
+                                }
+                            }
+                        </div>
+                        <div class="app-card-envs">
+                            @foreach (var env in app.Environments)
+                            {
+                                <span class="env-pill @env">@env</span>
+                            }
+                        </div>
+                    </div>
+                </a>
+            }
+        </div>
+    </div>
+</div>
+
+@code {
+    private IReadOnlyList<DeskribeUiService.AppInfo> apps = [];
+    private Dictionary<string, Deskribe.Sdk.Models.DeskribeManifest> manifests = new();
+    private int totalEnvs;
+    private int totalResources;
+
+    protected override async Task OnInitializedAsync()
+    {
+        apps = UiService.GetApplications();
+        totalEnvs = apps.Sum(a => a.Environments.Length);
+
+        foreach (var app in apps)
+        {
+            try
+            {
+                var manifest = await UiService.GetManifestAsync(app.Name);
+                manifests[app.Name] = manifest;
+                totalResources += manifest.Resources.Count;
+            }
+            catch { }
+        }
+    }
+}

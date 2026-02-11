@@ -1,0 +1,32 @@
+{
+  "name": "payments-api",
+  "resources": [
+    { "type": "postgres", "size": "m" },
+    { "type": "redis" },
+    {
+      "type": "kafka.messaging",
+      "topics": [
+        {
+          "name": "payments.transactions",
+          "partitions": 6,
+          "retentionHours": 168,
+          "owners": ["team-payments"],
+          "consumers": ["team-fraud", "team-notifications"]
+        }
+      ]
+    }
+  ],
+  "services": [
+    {
+      "env": {
+        "ConnectionStrings__Postgres": "@resource(postgres).connectionString",
+        "Redis__Endpoint": "@resource(redis).endpoint",
+        "Kafka__BootstrapServers": "@resource(kafka.messaging).endpoint"
+      },
+      "overrides": {
+        "dev": { "replicas": 2, "cpu": "250m", "memory": "512Mi" },
+        "prod": { "replicas": 3, "cpu": "500m", "memory": "1Gi" }
+      }
+    }
+  ]
+}

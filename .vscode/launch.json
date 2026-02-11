@@ -1,0 +1,54 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Deskribe (Aspire AppHost)",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Deskribe.AppHost/Deskribe.AppHost.csproj",
+      "preLaunchTask": "build"
+    },
+    {
+      "name": "Deskribe Web (standalone)",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Deskribe.Web/Deskribe.Web.csproj",
+      "preLaunchTask": "build"
+    },
+    {
+      "name": "Deskribe CLI - validate",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Deskribe.Cli/Deskribe.Cli.csproj",
+      "args": [
+        "validate",
+        "-f", "${workspaceFolder}/examples/payments-api/deskribe.json",
+        "--env", "dev",
+        "--platform", "${workspaceFolder}/examples/platform-config"
+      ],
+      "preLaunchTask": "build"
+    },
+    {
+      "name": "Deskribe CLI - plan",
+      "type": "dotnet",
+      "request": "launch",
+      "projectPath": "${workspaceFolder}/src/Deskribe.Cli/Deskribe.Cli.csproj",
+      "args": [
+        "plan",
+        "--env", "dev",
+        "--platform", "${workspaceFolder}/examples/platform-config",
+        "--image", "api=nginx:latest"
+      ],
+      "preLaunchTask": "build"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Full Stack (AppHost + Debug Web)",
+      "configurations": [
+        "Deskribe (Aspire AppHost)"
+      ],
+      "stopAll": true
+    }
+  ]
+}

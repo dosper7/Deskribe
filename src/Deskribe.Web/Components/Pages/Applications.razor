@@ -1,0 +1,75 @@
+@page "/applications"
+@using Deskribe.Web.Services
+@inject DeskribeUiService UiService
+@rendermode InteractiveServer
+
+<PageTitle>Applications - Deskribe</PageTitle>
+
+<div class="page-header">
+    <h1>Applications</h1>
+</div>
+
+<div class="card">
+    <div class="card-body" style="padding: 0;">
+        <table class="resource-table">
+            <thead>
+                <tr>
+                    <th>Name</th>
+                    <th>Resources</th>
+                    <th>Environments</th>
+                    <th>Status</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var app in apps)
+                {
+                    <tr>
+                        <td>
+                            <a href="plan/@app.Name/dev" style="font-weight: 600;">@app.Name</a>
+                        </td>
+                        <td>
+                            @if (manifests.TryGetValue(app.Name, out var manifest))
+                            {
+                                <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+                                    @foreach (var r in manifest.Resources)
+                                    {
+                                        <span class="badge badge-resource">@r.Type</span>
+                                    }
+                                </div>
+                            }
+                        </td>
+                        <td>
+                            <div style="display: flex; gap: 6px;">
+                                @foreach (var env in app.Environments)
+                                {
+                                    <span class="env-pill @env">@env</span>
+                                }
+                            </div>
+                        </td>
+                        <td>
+                            <span class="badge badge-healthy"><span class="status-dot healthy"></span> Synced</span>
+                        </td>
+                        <td>
+                            <a href="plan/@app.Name/dev" class="btn btn-outline" style="font-size: 12px;">View Plan</a>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+</div>
+
+@code {
+    private IReadOnlyList<DeskribeUiService.AppInfo> apps = [];
+    private Dictionary<string, Deskribe.Sdk.Models.DeskribeManifest> manifests = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        apps = UiService.GetApplications();
+        foreach (var app in apps)
+        {
+            try { manifests[app.Name] = await UiService.GetManifestAsync(app.Name); } catch { }
+        }
+    }
+}

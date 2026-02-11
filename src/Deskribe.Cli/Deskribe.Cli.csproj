@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Deskribe.Core\Deskribe.Core.csproj" />
+    <ProjectReference Include="..\Deskribe.Sdk\Deskribe.Sdk.csproj" />
+    <ProjectReference Include="..\Plugins\Deskribe.Plugins.Resources.Postgres\Deskribe.Plugins.Resources.Postgres.csproj" />
+    <ProjectReference Include="..\Plugins\Deskribe.Plugins.Resources.Redis\Deskribe.Plugins.Resources.Redis.csproj" />
+    <ProjectReference Include="..\Plugins\Deskribe.Plugins.Resources.Kafka\Deskribe.Plugins.Resources.Kafka.csproj" />
+    <ProjectReference Include="..\Plugins\Deskribe.Plugins.Backend.Pulumi\Deskribe.Plugins.Backend.Pulumi.csproj" />
+    <ProjectReference Include="..\Plugins\Deskribe.Plugins.Runtime.Kubernetes\Deskribe.Plugins.Runtime.Kubernetes.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.3" />
+    <PackageReference Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

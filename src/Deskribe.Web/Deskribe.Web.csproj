@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Deskribe.Core\Deskribe.Core.csproj" />
+    <ProjectReference Include="..\Deskribe.Sdk\Deskribe.Sdk.csproj" />
+    <ProjectReference Include="..\Plugins\Deskribe.Plugins.Resources.Postgres\Deskribe.Plugins.Resources.Postgres.csproj" />
+    <ProjectReference Include="..\Plugins\Deskribe.Plugins.Resources.Redis\Deskribe.Plugins.Resources.Redis.csproj" />
+    <ProjectReference Include="..\Plugins\Deskribe.Plugins.Resources.Kafka\Deskribe.Plugins.Resources.Kafka.csproj" />
+    <ProjectReference Include="..\Plugins\Deskribe.Plugins.Backend.Pulumi\Deskribe.Plugins.Backend.Pulumi.csproj" />
+    <ProjectReference Include="..\Plugins\Deskribe.Plugins.Runtime.Kubernetes\Deskribe.Plugins.Runtime.Kubernetes.csproj" />
+    <ProjectReference Include="..\Deskribe.ServiceDefaults\Deskribe.ServiceDefaults.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+  </PropertyGroup>
+
+</Project>

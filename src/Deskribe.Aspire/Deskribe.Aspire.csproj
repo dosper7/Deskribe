@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting" Version="13.1.1" />
+    <PackageReference Include="Aspire.Hosting.Kafka" Version="13.1.1" />
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.1.1" />
+    <PackageReference Include="Aspire.Hosting.Redis" Version="13.1.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Deskribe.Core\Deskribe.Core.csproj" />
+    <ProjectReference Include="..\Deskribe.Sdk\Deskribe.Sdk.csproj" />
+  </ItemGroup>
+
+</Project>
