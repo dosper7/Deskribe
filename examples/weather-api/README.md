@@ -1,149 +1,146 @@
-# Weather API — Deskribe E2E Example
+# Weather API — Deskribe End-to-End Example
 
-A minimal ASP.NET Core Web API that reads weather data from PostgreSQL.
-Deploys to **Azure** (AKS + Azure DB for PostgreSQL Flexible Server via Pulumi).
+A minimal ASP.NET Core Web API that reads weather data from PostgreSQL, deployed to Azure using Deskribe.
 
-## Architecture
-
-```
-Developer writes deskribe.json:
-  "I need postgres v16 and my weather-api service"
-
-Platform team configures base.json:
-  backends:  { "postgres": "pulumi" }            <- IaC tool to provision resources
-  runtime:   "kubernetes"                         <- Where the app container runs
-  pulumiProjectDir: "examples/weather-api/infra"  <- Pulumi program targeting Azure
-
-Deskribe Engine orchestrates two separate concerns:
-
-  +- RESOURCE PROVISIONING (Backend Adapter) ----------------------+
-  |  postgres -> PulumiBackendAdapter -> Pulumi program -> Azure   |
-  |  Result: Azure PostgreSQL Flexible Server (pg-weather-api-prod)|
-  |  Output: real connection string                                |
-  +----------------------------------------------------------------+
-
-  +- APP DEPLOYMENT (Runtime Adapter) -----------------------------+
-  |  weather-api -> KubernetesRuntimeAdapter -> AKS cluster        |
-  |  Injects: @resource(postgres).connectionString into K8s Secret |
-  |  Renders: Namespace + Secret + Deployment + Service YAML       |
-  +----------------------------------------------------------------+
-```
+This example demonstrates the full Deskribe flow: a developer declares what they need (`deskribe.json`), a platform team configures how infrastructure is provisioned (`platform-config/`), and Deskribe orchestrates everything — provisioning an Azure PostgreSQL Flexible Server via Pulumi and deploying the app container to AKS via the Kubernetes runtime adapter.
 
 ## Prerequisites
 
-- .NET 10 SDK
-- Azure CLI (`az`) + active subscription
-- Pulumi CLI (`pulumi`)
-- kubectl configured for your AKS cluster
+| Tool | Purpose |
+|---|---|
+| [.NET 10 SDK](https://dotnet.microsoft.com/download) | Build Deskribe and the Weather API |
+| [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) (`az`) | Create Azure resources |
+| [Pulumi CLI](https://www.pulumi.com/docs/install/) (`pulumi`) | Infrastructure-as-Code engine |
+| [Docker](https://docs.docker.com/get-docker/) | Build container images |
+| [kubectl](https://kubernetes.io/docs/tasks/tools/) | Verify Kubernetes deployments |
 
-## Deploy to Azure
+You also need an active Azure subscription.
 
-### 1. Login and configure
+## One-Time Azure Setup
+
+These steps create the Azure infrastructure that Deskribe deploys into. Run them once.
+
+### 1. Login to Azure
 
 ```bash
-# Azure login
 az login
 az account set --subscription <your-subscription-id>
-
-# Pulumi login (local state or Pulumi Cloud)
-pulumi login --local   # or: pulumi login
-
-# Get AKS credentials
-az aks get-credentials --resource-group rg-prod --name aks-prod
 ```
 
-### 2. Build and push the image
+### 2. Create a Resource Group, ACR, and AKS cluster
+
+```bash
+# Resource group
+az group create --name rg-deskribe --location westeurope
+
+# Container registry
+az acr create --name <your-acr-name> --resource-group rg-deskribe --sku Basic
+
+# AKS cluster with ACR integration
+az aks create \
+  --name aks-deskribe \
+  --resource-group rg-deskribe \
+  --node-count 2 \
+  --node-vm-size Standard_B2s \
+  --attach-acr <your-acr-name> \
+  --generate-ssh-keys
+```
+
+### 3. Get AKS credentials and configure Pulumi
+
+```bash
+# Point kubectl at your cluster
+az aks get-credentials --resource-group rg-deskribe --name aks-deskribe
+
+# Login to Pulumi (local state file or Pulumi Cloud)
+pulumi login --local   # or: pulumi login
+```
+
+## Build & Push the Container Image
 
 ```bash
 # Build the Weather API image
-docker build -t weather-api:latest -f examples/weather-api/src/WeatherApi/Dockerfile examples/weather-api/src/WeatherApi
+docker build \
+  -t weather-api:latest \
+  -f examples/weather-api/src/WeatherApi/Dockerfile \
+  examples/weather-api/src/WeatherApi
 
 # Tag and push to your ACR
-az acr login --name myacr
-docker tag weather-api:latest myacr.azurecr.io/weather-api:v1
-docker push myacr.azurecr.io/weather-api:v1
+az acr login --name <your-acr-name>
+docker tag weather-api:latest <your-acr-name>.azurecr.io/weather-api:v1
+docker push <your-acr-name>.azurecr.io/weather-api:v1
 ```
 
-### 3. Deploy with Deskribe
+## Deploy with Deskribe
+
+### 1. Validate
 
 ```bash
-# Validate the manifest
 dotnet run --project src/Deskribe.Cli -- validate \
   -f examples/weather-api/deskribe.json \
   --env prod \
   --platform examples/platform-config
+```
 
-# Deploy everything (Postgres via Pulumi + app to AKS)
+### 2. Apply
+
+```bash
 dotnet run --project src/Deskribe.Cli -- apply \
   -f examples/weather-api/deskribe.json \
   --env prod \
   --platform examples/platform-config \
-  --image api=myacr.azurecr.io/weather-api:v1
+  --image api=<your-acr-name>.azurecr.io/weather-api:v1
 ```
 
-### 4. Verify
+## What Happens Under the Hood
+
+1. Deskribe reads `deskribe.json` — sees a `postgres` resource and an `api` service.
+2. The platform config maps `postgres` to the `pulumi` backend and points `pulumiProjectDir` at `examples/weather-api/infra`.
+3. **PulumiBackendAdapter** calls `pulumi up` against `infra/Program.cs`, which provisions:
+   - Azure Resource Group (`rg-weather-api-prod`)
+   - PostgreSQL Flexible Server (`pg-weather-api-prod`, Standard_B1ms, v16, 32 GB)
+   - Database (`weatherapi`)
+   - Firewall rule allowing Azure services
+4. Pulumi stack outputs provide the real connection string: `Host=pg-weather-api-prod.postgres.database.azure.com;Port=5432;Database=weatherapi;...`
+5. Deskribe resolves `@resource(postgres).connectionString` in the service env vars with the real value.
+6. **KubernetesRuntimeAdapter** renders and applies to AKS:
+   - `Namespace/weather-api-prod`
+   - `Secret/weather-api-prod/weather-api-env` (contains the connection string)
+   - `Deployment/weather-api-prod/weather-api` (2 replicas, 500m CPU, 512Mi memory)
+   - `Service/weather-api-prod/weather-api` (port 80 → 8080)
+
+## Verify
 
 ```bash
+# Check all resources in the namespace
 kubectl get all -n weather-api-prod
+
+# Port-forward to the service
 kubectl port-forward svc/weather-api -n weather-api-prod 8080:80
+
+# Test the endpoints
 curl http://localhost:8080/weatherforecast
 curl http://localhost:8080/health
 ```
 
-### What happens under the hood
-
-1. Deskribe reads `deskribe.json` — sees `postgres` resource + `api` service
-2. **PulumiBackendAdapter** (Local Program mode) runs `pulumi up` against `infra/Program.cs`
-3. Pulumi provisions: Azure Resource Group + PostgreSQL Flexible Server (`Standard_B1ms`) + Database
-4. Stack outputs provide the real connection string: `Host=pg-weather-api-prod.postgres.database.azure.com;...`
-5. Deskribe resolves `@resource(postgres).connectionString` with the real value
-6. **KubernetesRuntimeAdapter** renders and applies Namespace + Secret + Deployment + Service to AKS
-
-### Tear down
+## Tear Down
 
 ```bash
+# Destroy via Deskribe (removes K8s namespace + Pulumi stack)
 dotnet run --project src/Deskribe.Cli -- destroy \
   -f examples/weather-api/deskribe.json \
   --env prod \
   --platform examples/platform-config
+
+# Optionally delete the Azure resource group with ACR and AKS
+az group delete --name rg-deskribe --yes --no-wait
 ```
-
-## Secrets Strategy
-
-By default, Deskribe creates standard Kubernetes `Opaque` secrets. You can change this in the platform config:
-
-### External Secrets Operator (Azure Key Vault)
-
-In `base.json`:
-```json
-{
-  "defaults": {
-    "secretsStrategy": "external-secrets",
-    "externalSecretsStore": "azure-keyvault"
-  }
-}
-```
-
-This generates an `ExternalSecret` CRD instead of a `V1Secret`, referencing your `ClusterSecretStore`.
-
-### Sealed Secrets
-
-In `base.json`:
-```json
-{
-  "defaults": {
-    "secretsStrategy": "sealed-secrets"
-  }
-}
-```
-
-This generates a standard `V1Secret` with `sealedsecrets.bitnami.com/managed: "true"` annotation.
 
 ## Project Structure
 
 ```
 examples/weather-api/
-  deskribe.json              # Deskribe manifest
+  deskribe.json              # Deskribe manifest (what the developer declares)
   README.md                  # This file
   src/WeatherApi/
     Program.cs               # Minimal API endpoints
@@ -153,6 +150,6 @@ examples/weather-api/
     Migrations/              # EF Core migrations
   infra/
     Pulumi.yaml              # Pulumi project config
-    Program.cs               # Azure PostgreSQL provisioning
-    Deskribe.Infra.csproj    # Pulumi Azure project
+    Program.cs               # Azure PostgreSQL provisioning (Pulumi C#)
+    Deskribe.Infra.csproj    # Pulumi Azure SDK references
 ```

@@ -243,7 +243,7 @@ public class DeskribeEngine
             var backend = _pluginHost.GetBackendAdapter(backendName);
             if (backend is not null)
             {
-                await backend.DestroyAsync(manifest.Name, environment, ct);
+                await backend.DestroyAsync(manifest.Name, environment, platform, ct);
             }
         }
 

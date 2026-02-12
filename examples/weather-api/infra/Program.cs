@@ -7,7 +7,7 @@ return await Pulumi.Deployment.RunAsync(() =>
 {
     var config = new Config();
     var appName = config.Get("appName") ?? "weather-api";
-    var environment = config.Get("environment") ?? "prod-eu";
+    var environment = config.Get("environment") ?? "prod";
     var region = config.Get("region") ?? "westeurope";
 
     var resourceGroupName = $"rg-{appName}-{environment}";

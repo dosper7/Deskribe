@@ -5,6 +5,6 @@ config:
   appName:
     default: weather-api
   environment:
-    default: prod-eu
+    default: prod
   region:
     default: westeurope

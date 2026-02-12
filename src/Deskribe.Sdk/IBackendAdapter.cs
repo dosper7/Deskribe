@@ -6,7 +6,7 @@ public interface IBackendAdapter
 {
     string Name { get; }
     Task<BackendApplyResult> ApplyAsync(DeskribePlan plan, CancellationToken ct = default);
-    Task DestroyAsync(string appName, string environment, CancellationToken ct = default);
+    Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct = default);
 }
 
 public record BackendApplyResult

@@ -12,40 +12,16 @@ public class PulumiBackendAdapter : IBackendAdapter
     {
         var pulumiProjectDir = plan.Platform.Defaults.PulumiProjectDir;
 
-        if (!string.IsNullOrEmpty(pulumiProjectDir))
+        if (string.IsNullOrEmpty(pulumiProjectDir))
         {
-            return await ApplyWithLocalProgramAsync(plan, pulumiProjectDir, ct);
-        }
-
-        return ApplyInlineMode(plan);
-    }
-
-    private static BackendApplyResult ApplyInlineMode(DeskribePlan plan)
-    {
-        // Inline mode: No pulumiProjectDir configured — dry-run with placeholder outputs
-        Console.WriteLine("[Pulumi] No pulumiProjectDir configured. Running in dry-run mode with placeholder outputs.");
-        Console.WriteLine("[Pulumi] To provision real infrastructure, set 'pulumiProjectDir' in platform defaults.");
-
-        var outputs = new Dictionary<string, Dictionary<string, string>>();
-
-        foreach (var resourcePlan in plan.ResourcePlans)
-        {
-            outputs[resourcePlan.ResourceType] = resourcePlan.PlannedOutputs;
-
-            Console.WriteLine($"[Pulumi] (dry-run) {resourcePlan.ResourceType}:");
-            Console.WriteLine($"  Action: {resourcePlan.Action}");
-            foreach (var (key, value) in resourcePlan.Configuration)
+            return new BackendApplyResult
             {
-                Console.WriteLine($"  {key}: {FormatValue(value)}");
-            }
-            Console.WriteLine($"  Outputs: placeholder values (pending real provisioning)");
+                Success = false,
+                Errors = ["pulumiProjectDir must be configured in platform defaults to use the Pulumi backend"]
+            };
         }
 
-        return new BackendApplyResult
-        {
-            Success = true,
-            ResourceOutputs = outputs
-        };
+        return await ApplyWithLocalProgramAsync(plan, pulumiProjectDir, ct);
     }
 
     private static async Task<BackendApplyResult> ApplyWithLocalProgramAsync(
@@ -125,10 +101,18 @@ public class PulumiBackendAdapter : IBackendAdapter
         }
     }
 
-    public Task DestroyAsync(string appName, string environment, CancellationToken ct)
+    public async Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)
     {
-        Console.WriteLine($"[Pulumi] Would destroy stack: {appName}-{environment}");
-        return Task.CompletedTask;
+        var projectDir = platform.Defaults.PulumiProjectDir;
+        if (string.IsNullOrEmpty(projectDir))
+            throw new InvalidOperationException("pulumiProjectDir must be configured in platform defaults to use the Pulumi backend");
+
+        var stackName = $"{appName}-{environment}";
+        var workspace = await global::Pulumi.Automation.LocalWorkspace.CreateOrSelectStackAsync(
+            new global::Pulumi.Automation.LocalProgramArgs(stackName, projectDir), ct);
+        await workspace.DestroyAsync(
+            new global::Pulumi.Automation.DestroyOptions { OnStandardOutput = Console.WriteLine }, ct);
+        await workspace.Workspace.RemoveStackAsync(stackName, ct);
     }
 
     private static string FormatValue(object? value)

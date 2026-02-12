@@ -3,11 +3,11 @@
   <ItemGroup>
     <ProjectReference Include="..\Deskribe.Core\Deskribe.Core.csproj" />
     <ProjectReference Include="..\Deskribe.Sdk\Deskribe.Sdk.csproj" />
-    <ProjectReference Include="..\Plugins\Resources\Deskribe.Plugins.Resources.Postgres\Deskribe.Plugins.Resources.Postgres.csproj" />
-    <ProjectReference Include="..\Plugins\Resources\Deskribe.Plugins.Resources.Redis\Deskribe.Plugins.Resources.Redis.csproj" />
-    <ProjectReference Include="..\Plugins\Resources\Deskribe.Plugins.Resources.Kafka\Deskribe.Plugins.Resources.Kafka.csproj" />
-    <ProjectReference Include="..\Plugins\Backends\Deskribe.Plugins.Backend.Pulumi\Deskribe.Plugins.Backend.Pulumi.csproj" />
-    <ProjectReference Include="..\Plugins\Runtimes\Deskribe.Plugins.Runtime.Kubernetes\Deskribe.Plugins.Runtime.Kubernetes.csproj" />
+    <ProjectReference Include="..\Plugins\Resources\Postgres\Deskribe.Plugins.Resources.Postgres.csproj" />
+    <ProjectReference Include="..\Plugins\Resources\Redis\Deskribe.Plugins.Resources.Redis.csproj" />
+    <ProjectReference Include="..\Plugins\Resources\Kafka\Deskribe.Plugins.Resources.Kafka.csproj" />
+    <ProjectReference Include="..\Plugins\Backends\Pulumi\Deskribe.Plugins.Backend.Pulumi.csproj" />
+    <ProjectReference Include="..\Plugins\Runtimes\Kubernetes\Deskribe.Plugins.Runtime.Kubernetes.csproj" />
   </ItemGroup>
 
   <ItemGroup>
