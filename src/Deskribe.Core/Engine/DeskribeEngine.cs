@@ -166,16 +166,9 @@ public class DeskribeEngine
         // 1. Apply infra via backend adapters
         var resourceOutputs = new Dictionary<string, Dictionary<string, string>>();
 
-        // Merge environment-level backends over platform-level backends
-        var mergedBackends = new Dictionary<string, string>(plan.Platform.Backends);
-        foreach (var (key, value) in plan.EnvironmentConfig.Backends)
-        {
-            mergedBackends[key] = value;
-        }
-
         foreach (var resourcePlan in plan.ResourcePlans)
         {
-            var backendName = mergedBackends.GetValueOrDefault(resourcePlan.ResourceType, "pulumi");
+            var backendName = plan.Platform.Backends.GetValueOrDefault(resourcePlan.ResourceType, "pulumi");
             var backend = _pluginHost.GetBackendAdapter(backendName);
 
             if (backend is null)

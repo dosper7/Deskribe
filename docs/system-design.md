@@ -111,7 +111,7 @@ The manifest is the developer's single file. Everything starts here.
 ```json
 {
   // ---- Identity ----
-  // Used for namespace generation, Helm release names, K8s labels.
+  // Used for namespace generation, resource naming, K8s labels.
   // Pattern: {app}-{env} --> "payments-api-prod"
   "name": "payments-api",
 
@@ -167,7 +167,7 @@ The manifest is the developer's single file. Everything starts here.
 deskribe.json
 |
 +-- name (string, required)
-|     Used in: namespace, Helm releases, K8s labels
+|     Used in: namespace, resource naming, K8s labels
 |     Example: "payments-api" --> namespace "payments-api-prod"
 |
 +-- resources[] (array of resource objects)
@@ -562,7 +562,7 @@ When the engine processes a resource, it asks the PluginHost:
     --> Returns ResourcePlanResult with:
         - Action: "create" | "update" | "no-change"
         - PlannedOutputs: what the resource will produce
-        - Configuration: Helm chart, version, namespace, etc.
+        - Configuration: version, size, region, etc.
 
   Phase 4: APPLY (deskribe apply)
   ===============================
@@ -1141,11 +1141,10 @@ class does and how they connect.
   Plan:
     - Defaults: size="s", version="16"
     - HA comes from resource.Ha ?? envConfig.Ha ?? false
-    - Helm chart: oci://registry-1.docker.io/bitnamicharts/postgresql
-    - Release name: "{appName}-postgres"
-    - Outputs:
-        connectionString: "Host={release}.{ns}.svc.cluster.local;Port=5432;..."
-        host: "{release}.{ns}.svc.cluster.local"
+    - Configuration: version, size, ha, appName, environment, region
+    - Outputs (pending placeholders until backend provisions):
+        connectionString: "<pending:{appName}-postgres>"
+        host: "<pending:{appName}-postgres-host>"
         port: "5432"
 ```
 
@@ -1160,11 +1159,10 @@ class does and how they connect.
 
   Plan:
     - HA comes from resource.Ha ?? envConfig.Ha ?? false
-    - Helm chart: oci://registry-1.docker.io/bitnamicharts/redis
-    - Release name: "{appName}-redis"
-    - Outputs:
-        endpoint: "{release}-master.{ns}.svc.cluster.local:6379"
-        host: "{release}-master.{ns}.svc.cluster.local"
+    - Configuration: size, ha, appName, environment, region
+    - Outputs (pending placeholders until backend provisions):
+        endpoint: "<pending:{appName}-redis>"
+        host: "<pending:{appName}-redis-host>"
         port: "6379"
 ```
 
@@ -1183,11 +1181,10 @@ class does and how they connect.
       - Each topic needs at least one owner
 
     Plan:
-      - Helm chart: oci://registry-1.docker.io/bitnamicharts/kafka
-      - Release name: "{appName}-kafka"
-      - Outputs:
-          endpoint: "{release}.{ns}.svc.cluster.local:9092"
-          bootstrapServers: "{release}-0.{release}-headless.{ns}...:9092"
+      - Configuration: appName, environment, region, topics
+      - Outputs (pending placeholders until backend provisions):
+          endpoint: "<pending:{appName}-kafka>"
+          bootstrapServers: "<pending:{appName}-kafka-bootstrap>"
       - Configuration includes topic details (name, partitions, retention)
 
   KafkaMessagingProvider (IMessagingProvider):
@@ -1218,21 +1215,6 @@ class does and how they connect.
 
   DestroyAsync:
     - Logs: "[Pulumi] Would destroy stack: {app}-{env}"
-```
-
-**Helm Backend Adapter**:
-
-```
-  Name: "helm"
-
-  ApplyAsync:
-    - Runs 'helm upgrade --install' for each resource using Bitnami charts
-    - Reads K8s secrets post-install to extract generated passwords
-    - Builds connection strings from discovered endpoints and credentials
-    - Supports postgres, redis, kafka.messaging out of the box
-
-  DestroyAsync:
-    - Lists releases in namespace and runs 'helm uninstall' for each
 ```
 
 **Kubernetes Runtime Adapter**:
@@ -1522,10 +1504,9 @@ For each resource, the engine calls the provider's PlanAsync:
           "port": "5432"
         }
         Configuration: {
-          helmRelease: "payments-api-postgres",
-          helmChart: "oci://registry-1.docker.io/bitnamicharts/postgresql",
           version: "16", size: "m", ha: true,
-          namespace: "payments-api-prod"
+          appName: "payments-api", environment: "prod",
+          region: "westeurope"
         }
       }
 
@@ -1534,16 +1515,14 @@ For each resource, the engine calls the provider's PlanAsync:
         ResourceType: "redis"
         Action: "create"
         PlannedOutputs: {
-          "endpoint": "payments-api-redis-master.payments-api-prod
-                       .svc.cluster.local:6379"
-          "host": "payments-api-redis-master.payments-api-prod
-                   .svc.cluster.local"
+          "endpoint": "<pending:payments-api-redis>"
+          "host": "<pending:payments-api-redis-host>"
           "port": "6379"
         }
         Configuration: {
-          helmRelease: "payments-api-redis",
-          helmChart: "oci://registry-1.docker.io/bitnamicharts/redis",
-          ha: true, namespace: "payments-api-prod"
+          size: "s", ha: true,
+          appName: "payments-api", environment: "prod",
+          region: "westeurope"
         }
       }
 
@@ -1552,16 +1531,12 @@ For each resource, the engine calls the provider's PlanAsync:
         ResourceType: "kafka.messaging"
         Action: "create"
         PlannedOutputs: {
-          "endpoint": "payments-api-kafka.payments-api-prod
-                       .svc.cluster.local:9092"
-          "bootstrapServers": "payments-api-kafka-0
-                               .payments-api-kafka-headless
-                               .payments-api-prod.svc.cluster.local:9092"
+          "endpoint": "<pending:payments-api-kafka>"
+          "bootstrapServers": "<pending:payments-api-kafka-bootstrap>"
         }
         Configuration: {
-          helmRelease: "payments-api-kafka",
-          helmChart: "oci://registry-1.docker.io/bitnamicharts/kafka",
-          namespace: "payments-api-prod",
+          appName: "payments-api", environment: "prod",
+          region: "westeurope",
           topics: [{ name: "payments.transactions",
                      partitions: 6, retentionHours: 168, ... }]
         }
@@ -1577,48 +1552,39 @@ For each resource plan, the engine looks up the backend and calls ApplyAsync:
   backend = PluginHost.GetBackendAdapter("pulumi") --> PulumiBackendAdapter
 
   PulumiBackendAdapter.ApplyAsync(plan):
-    [Pulumi] Would deploy postgres:
+    [Pulumi] (dry-run) postgres:
       Action: create
-      helmRelease: payments-api-postgres
-      helmChart: oci://registry-1.docker.io/bitnamicharts/postgresql
       version: 16
       size: m
       ha: True
-      namespace: payments-api-prod
+      appName: payments-api
+      environment: prod
+      region: westeurope
+      Outputs: placeholder values (pending real provisioning)
 
-    [Pulumi] Would deploy redis:
+    [Pulumi] (dry-run) redis:
       Action: create
-      helmRelease: payments-api-redis
-      ...
+      size: s, ha: True, ...
 
-    [Pulumi] Would deploy kafka.messaging:
+    [Pulumi] (dry-run) kafka.messaging:
       Action: create
-      helmRelease: payments-api-kafka
-      ...
+      topics: [payments.transactions], ...
 
-  Returns BackendApplyResult with resource outputs:
+  Returns BackendApplyResult with resource outputs (placeholders in dry-run):
     resourceOutputs = {
       "postgres": {
-        "connectionString": "Host=payments-api-postgres.payments-api-prod
-                             .svc.cluster.local;Port=5432;
-                             Database=payments-api;Username=app;
-                             Password=<generated>",
-        "host": "payments-api-postgres.payments-api-prod.svc.cluster.local",
+        "connectionString": "<pending:payments-api-postgres>",
+        "host": "<pending:payments-api-postgres-host>",
         "port": "5432"
       },
       "redis": {
-        "endpoint": "payments-api-redis-master.payments-api-prod
-                     .svc.cluster.local:6379",
-        "host": "payments-api-redis-master.payments-api-prod
-                 .svc.cluster.local",
+        "endpoint": "<pending:payments-api-redis>",
+        "host": "<pending:payments-api-redis-host>",
         "port": "6379"
       },
       "kafka.messaging": {
-        "endpoint": "payments-api-kafka.payments-api-prod
-                     .svc.cluster.local:9092",
-        "bootstrapServers": "payments-api-kafka-0
-                             .payments-api-kafka-headless
-                             .payments-api-prod.svc.cluster.local:9092"
+        "endpoint": "<pending:payments-api-kafka>",
+        "bootstrapServers": "<pending:payments-api-kafka-bootstrap>"
       }
     }
 ```

@@ -12,7 +12,4 @@ public sealed record EnvironmentConfig
 
     [JsonPropertyName("alertRouting")]
     public Dictionary<string, List<string>> AlertRouting { get; init; } = new();
-
-    [JsonPropertyName("backends")]
-    public Dictionary<string, string> Backends { get; init; } = new();
 }

@@ -30,10 +30,7 @@ public class RedisResourceProvider : IResourceProvider
         var redis = resource as RedisResource;
         var ha = redis?.Ha ?? ctx.EnvironmentConfig.Defaults.Ha ?? false;
 
-        var releaseName = $"{ctx.AppName}-redis";
-        var ns = ctx.Platform.Defaults.NamespacePattern
-            .Replace("{app}", ctx.AppName)
-            .Replace("{env}", ctx.Environment);
+        var size = redis?.Size ?? "s";
 
         return Task.FromResult(new ResourcePlanResult
         {
@@ -41,16 +38,17 @@ public class RedisResourceProvider : IResourceProvider
             Action = "create",
             PlannedOutputs = new Dictionary<string, string>
             {
-                ["endpoint"] = $"{releaseName}-master.{ns}.svc.cluster.local:6379",
-                ["host"] = $"{releaseName}-master.{ns}.svc.cluster.local",
+                ["endpoint"] = $"<pending:{ctx.AppName}-redis>",
+                ["host"] = $"<pending:{ctx.AppName}-redis-host>",
                 ["port"] = "6379"
             },
             Configuration = new Dictionary<string, object?>
             {
-                ["helmRelease"] = releaseName,
-                ["helmChart"] = "oci://registry-1.docker.io/bitnamicharts/redis",
+                ["size"] = size,
                 ["ha"] = ha,
-                ["namespace"] = ns
+                ["appName"] = ctx.AppName,
+                ["environment"] = ctx.Environment,
+                ["region"] = ctx.Platform.Defaults.Region
             }
         });
     }

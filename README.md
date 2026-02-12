@@ -96,9 +96,9 @@ $ deskribe plan --env dev
   ===================================
 
   Resources:
-    + postgres (size: m)    -> Helm: bitnami/postgresql
-    + redis    (size: s)    -> Helm: bitnami/redis
-    + kafka.messaging       -> Helm: bitnami/kafka (1 topic, 6 partitions)
+    + postgres (size: m)    -> Pulumi: Azure PostgreSQL Flexible Server
+    + redis    (size: s)    -> Pulumi: Azure Cache for Redis
+    + kafka.messaging       -> Pulumi: Azure Event Hubs (1 topic, 6 partitions)
 
   Workload:
     Namespace:  payments-api-dev
@@ -118,9 +118,8 @@ $ deskribe plan --env dev
 
 ```
 platform-config/
-  base.json       # "All services default to 2 replicas, 250m CPU, K8s runtime"
+  base.json       # "All services default to 2 replicas, 250m CPU, K8s runtime, Pulumi backend"
   envs/
-    dev.json      # "Dev gets smaller instances"
     prod.json     # "Prod gets 3 replicas, 1Gi memory, HA enabled"
 ```
 
@@ -176,6 +175,40 @@ Platform base  <  Environment  <  Developer
 ```
 
 Developers can override replicas, CPU, memory per environment. They **cannot** override which backend is used (Pulumi vs Terraform) or which region to deploy to. That's platform-level governance.
+
+---
+
+## Architecture: Three Plugin Types
+
+Deskribe's plugin system cleanly separates three concerns:
+
+```
+  +- Resource Provider (cloud-agnostic) ----+
+  |  "I need postgres v16, size S"          |
+  |  Validates config and produces a plan   |
+  |  with pending placeholder outputs.      |
+  +------------------+---------------------+
+                     |
+                     v
+  +- Backend Adapter (cloud-aware) ---------+
+  |  Takes config, runs IaC tool            |
+  |  (Pulumi/Terraform), returns real       |
+  |  outputs like connection strings.       |
+  +------------------+---------------------+
+                     |
+                     v
+  +- Runtime Adapter (cluster-aware) -------+
+  |  Deploys app containers to K8s,         |
+  |  injects resource outputs as env vars   |
+  |  via Secrets.                           |
+  +------------------+---------------------+
+```
+
+| Plugin Type | Concern | Example |
+|---|---|---|
+| **Resource Provider** | What resources are needed (cloud-agnostic) | PostgresResourceProvider validates `size: "s"`, `version: "16"` |
+| **Backend Adapter** | How resources are provisioned (cloud-aware) | PulumiBackendAdapter runs `pulumi up` targeting Azure |
+| **Runtime Adapter** | Where the app runs (cluster-aware) | KubernetesRuntimeAdapter renders Namespace + Secret + Deployment + Service |
 
 ---
 
@@ -496,11 +529,14 @@ Deskribe/
     Deskribe.AppHost/          Aspire orchestrator
     Deskribe.ServiceDefaults/  OpenTelemetry, health checks
     Plugins/
-      Deskribe.Plugins.Resources.Postgres/
-      Deskribe.Plugins.Resources.Redis/
-      Deskribe.Plugins.Resources.Kafka/
-      Deskribe.Plugins.Backend.Pulumi/
-      Deskribe.Plugins.Runtime.Kubernetes/
+      Backends/
+        Deskribe.Plugins.Backend.Pulumi/
+      Resources/
+        Deskribe.Plugins.Resources.Postgres/
+        Deskribe.Plugins.Resources.Redis/
+        Deskribe.Plugins.Resources.Kafka/
+      Runtimes/
+        Deskribe.Plugins.Runtime.Kubernetes/
   tests/
     Deskribe.Core.Tests/       Merge engine, reference resolver, engine
     Deskribe.Plugins.Tests/    Postgres, Kafka provider tests
@@ -556,36 +592,28 @@ dotnet test
 
 ## E2E Example: Weather API
 
-A full working example deploying a Weather API + Postgres to both local K8s and Azure.
+A full working example deploying a Weather API + Postgres to Azure (AKS + Azure PostgreSQL Flexible Server via Pulumi).
 See [`examples/weather-api/README.md`](examples/weather-api/README.md) for the complete guide.
-
-### Deploy to Local K8s (Docker Desktop)
-
-```bash
-# Build the image
-docker build -t weather-api:local -f examples/weather-api/src/WeatherApi/Dockerfile examples/weather-api/src/WeatherApi
-
-# Deploy (Postgres via Helm + app to local K8s)
-dotnet run --project src/Deskribe.Cli -- apply \
-  -f examples/weather-api/deskribe.json \
-  --env local \
-  --platform examples/platform-config \
-  --image api=weather-api:local
-
-# Test
-kubectl port-forward svc/weather-api -n weather-api-local 8080:80
-curl http://localhost:8080/weatherforecast
-```
 
 ### Deploy to Azure
 
 ```bash
+# Build and push the image
+docker build -t weather-api:latest -f examples/weather-api/src/WeatherApi/Dockerfile examples/weather-api/src/WeatherApi
+az acr login --name myacr
+docker tag weather-api:latest myacr.azurecr.io/weather-api:v1
+docker push myacr.azurecr.io/weather-api:v1
+
 # Deploy (Postgres via Pulumi + app to AKS)
 dotnet run --project src/Deskribe.Cli -- apply \
   -f examples/weather-api/deskribe.json \
-  --env prod-eu \
+  --env prod \
   --platform examples/platform-config \
   --image api=myacr.azurecr.io/weather-api:v1
+
+# Verify
+kubectl port-forward svc/weather-api -n weather-api-prod 8080:80
+curl http://localhost:8080/weatherforecast
 ```
 
 ### Secrets Management

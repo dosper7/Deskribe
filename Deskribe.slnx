@@ -8,13 +8,16 @@
     <Project Path="src/Deskribe.ServiceDefaults/Deskribe.ServiceDefaults.csproj" />
     <Project Path="src/Deskribe.Web/Deskribe.Web.csproj" />
   </Folder>
-  <Folder Name="/src/Plugins/">
-    <Project Path="src/Plugins/Deskribe.Plugins.Backend.Helm/Deskribe.Plugins.Backend.Helm.csproj" />
-    <Project Path="src/Plugins/Deskribe.Plugins.Backend.Pulumi/Deskribe.Plugins.Backend.Pulumi.csproj" />
-    <Project Path="src/Plugins/Deskribe.Plugins.Resources.Kafka/Deskribe.Plugins.Resources.Kafka.csproj" />
-    <Project Path="src/Plugins/Deskribe.Plugins.Resources.Postgres/Deskribe.Plugins.Resources.Postgres.csproj" />
-    <Project Path="src/Plugins/Deskribe.Plugins.Resources.Redis/Deskribe.Plugins.Resources.Redis.csproj" />
-    <Project Path="src/Plugins/Deskribe.Plugins.Runtime.Kubernetes/Deskribe.Plugins.Runtime.Kubernetes.csproj" />
+  <Folder Name="/src/Plugins/Backends/">
+    <Project Path="src/Plugins/Backends/Deskribe.Plugins.Backend.Pulumi/Deskribe.Plugins.Backend.Pulumi.csproj" />
+  </Folder>
+  <Folder Name="/src/Plugins/Resources/">
+    <Project Path="src/Plugins/Resources/Deskribe.Plugins.Resources.Kafka/Deskribe.Plugins.Resources.Kafka.csproj" />
+    <Project Path="src/Plugins/Resources/Deskribe.Plugins.Resources.Postgres/Deskribe.Plugins.Resources.Postgres.csproj" />
+    <Project Path="src/Plugins/Resources/Deskribe.Plugins.Resources.Redis/Deskribe.Plugins.Resources.Redis.csproj" />
+  </Folder>
+  <Folder Name="/src/Plugins/Runtimes/">
+    <Project Path="src/Plugins/Runtimes/Deskribe.Plugins.Runtime.Kubernetes/Deskribe.Plugins.Runtime.Kubernetes.csproj" />
   </Folder>
   <Folder Name="/examples/">
     <Project Path="examples/weather-api/src/WeatherApi/WeatherApi.csproj" />

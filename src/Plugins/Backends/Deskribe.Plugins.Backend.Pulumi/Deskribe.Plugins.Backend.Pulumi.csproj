@@ -1,11 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\..\Deskribe.Sdk\Deskribe.Sdk.csproj" />
+    <ProjectReference Include="..\..\..\Deskribe.Sdk\Deskribe.Sdk.csproj" />
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="KubernetesClient" Version="18.0.13" />
+    <PackageReference Include="Pulumi.Automation" Version="3.*" />
   </ItemGroup>
 
   <PropertyGroup>

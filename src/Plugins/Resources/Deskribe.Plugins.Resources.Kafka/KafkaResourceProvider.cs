@@ -41,10 +41,6 @@ public class KafkaResourceProvider : IResourceProvider
     public Task<ResourcePlanResult> PlanAsync(DeskribeResource resource, PlanContext ctx, CancellationToken ct)
     {
         var kafka = (KafkaMessagingResource)resource;
-        var releaseName = $"{ctx.AppName}-kafka";
-        var ns = ctx.Platform.Defaults.NamespacePattern
-            .Replace("{app}", ctx.AppName)
-            .Replace("{env}", ctx.Environment);
 
         var topicConfigs = kafka.Topics.Select(t => new Dictionary<string, object?>
         {
@@ -61,14 +57,14 @@ public class KafkaResourceProvider : IResourceProvider
             Action = "create",
             PlannedOutputs = new Dictionary<string, string>
             {
-                ["endpoint"] = $"{releaseName}.{ns}.svc.cluster.local:9092",
-                ["bootstrapServers"] = $"{releaseName}-0.{releaseName}-headless.{ns}.svc.cluster.local:9092"
+                ["endpoint"] = $"<pending:{ctx.AppName}-kafka>",
+                ["bootstrapServers"] = $"<pending:{ctx.AppName}-kafka-bootstrap>"
             },
             Configuration = new Dictionary<string, object?>
             {
-                ["helmRelease"] = releaseName,
-                ["helmChart"] = "oci://registry-1.docker.io/bitnamicharts/kafka",
-                ["namespace"] = ns,
+                ["appName"] = ctx.AppName,
+                ["environment"] = ctx.Environment,
+                ["region"] = ctx.Platform.Defaults.Region,
                 ["topics"] = topicConfigs
             }
         });

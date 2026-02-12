@@ -1479,7 +1479,7 @@ provider --- NOT in the developer's manifest.
 ### Size mapping examples
 
 ```
-  Developer size    Azure                      AWS                    K8s (Helm)
+  Developer size    Azure                      AWS                    K8s
   +----------+------+--------------------------+----------------------+------------------+
   | xs       |      | B_Standard_B1ms          | db.t3.micro          | 256Mi / 0.25 CPU |
   | s        |      | B_Standard_B1ms          | db.t3.small          | 512Mi / 0.5 CPU  |
@@ -1549,7 +1549,7 @@ public class PostgresResourceProvider : IResourceProvider
 ### Redis size mapping
 
 ```
-  Developer size    Azure Cache              AWS ElastiCache        K8s (Helm)
+  Developer size    Azure Cache              AWS ElastiCache        K8s
   +----------+------+------------------------+----------------------+------------------+
   | xs       |      | C0 (250MB)             | cache.t3.micro       | 128Mi            |
   | s        |      | C1 (1GB)               | cache.t3.small       | 256Mi            |
@@ -1637,7 +1637,7 @@ The platform config controls the target per environment:
 }
 ```
 
-Uses the `kubernetes` runtime adapter, deploying to a local kind/minikube/Docker Desktop cluster. Backend adapters for dev might use Helm charts to deploy Postgres/Redis as containers.
+Uses the `kubernetes` runtime adapter, deploying to a local kind/minikube/Docker Desktop cluster. Backend adapters use Pulumi to provision resources.
 
 **`envs/staging.json` --- Azure**
 
@@ -1685,7 +1685,7 @@ Uses the `aws-ecs` runtime adapter. Backend adapters provision RDS PostgreSQL an
   deskribe apply --env dev --platform ./platform-config
        |
        |  Loads envs/dev.json -> runtime = "kubernetes"
-       |  Backend: "pulumi" -> deploys Postgres/Redis via Helm
+       |  Backend: "pulumi" -> provisions Postgres/Redis via Pulumi
        |  Runtime: "kubernetes" -> generates K8s YAML, applies to local cluster
        v
   Result: Postgres + Redis containers on local K8s

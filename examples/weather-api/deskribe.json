@@ -10,8 +10,7 @@
         "ConnectionStrings__WeatherDb": "@resource(postgres).connectionString"
       },
       "overrides": {
-        "local": { "replicas": 1, "cpu": "250m", "memory": "256Mi" },
-        "prod-eu": { "replicas": 3, "cpu": "500m", "memory": "1Gi" }
+        "prod": { "replicas": 2, "cpu": "500m", "memory": "512Mi" }
       }
     }
   ]

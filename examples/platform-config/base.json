@@ -6,7 +6,8 @@
     "replicas": 2,
     "cpu": "250m",
     "memory": "512Mi",
-    "namespacePattern": "{app}-{env}"
+    "namespacePattern": "{app}-{env}",
+    "pulumiProjectDir": "examples/weather-api/infra"
   },
   "backends": {
     "postgres": "pulumi",

@@ -6,7 +6,6 @@ using Deskribe.Core.Merging;
 using Deskribe.Core.Plugins;
 using Deskribe.Core.Resolution;
 using Deskribe.Core.Validation;
-using Deskribe.Plugins.Backend.Helm;
 using Deskribe.Plugins.Backend.Pulumi;
 using Deskribe.Plugins.Resources.Kafka;
 using Deskribe.Plugins.Resources.Postgres;
@@ -37,7 +36,6 @@ var pluginHost = serviceProvider.GetRequiredService<PluginHost>();
 pluginHost.RegisterPlugin(new PostgresPlugin());
 pluginHost.RegisterPlugin(new RedisPlugin());
 pluginHost.RegisterPlugin(new KafkaPlugin());
-pluginHost.RegisterPlugin(new HelmPlugin());
 pluginHost.RegisterPlugin(new PulumiPlugin());
 pluginHost.RegisterPlugin(new KubernetesPlugin());
 

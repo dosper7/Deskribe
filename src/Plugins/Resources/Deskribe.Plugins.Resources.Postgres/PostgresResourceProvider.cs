@@ -36,29 +36,24 @@ public class PostgresResourceProvider : IResourceProvider
         var version = pg?.Version ?? "16";
         var ha = pg?.Ha ?? ctx.EnvironmentConfig.Defaults.Ha ?? false;
 
-        var releaseName = $"{ctx.AppName}-postgres";
-        var ns = ctx.Platform.Defaults.NamespacePattern
-            .Replace("{app}", ctx.AppName)
-            .Replace("{env}", ctx.Environment);
-
         return Task.FromResult(new ResourcePlanResult
         {
             ResourceType = "postgres",
             Action = "create",
             PlannedOutputs = new Dictionary<string, string>
             {
-                ["connectionString"] = $"Host={releaseName}.{ns}.svc.cluster.local;Port=5432;Database={ctx.AppName};Username=app;Password=<generated>",
-                ["host"] = $"{releaseName}.{ns}.svc.cluster.local",
+                ["connectionString"] = $"<pending:{ctx.AppName}-postgres>",
+                ["host"] = $"<pending:{ctx.AppName}-postgres-host>",
                 ["port"] = "5432"
             },
             Configuration = new Dictionary<string, object?>
             {
-                ["helmRelease"] = releaseName,
-                ["helmChart"] = "oci://registry-1.docker.io/bitnamicharts/postgresql",
                 ["version"] = version,
                 ["size"] = size,
                 ["ha"] = ha,
-                ["namespace"] = ns
+                ["appName"] = ctx.AppName,
+                ["environment"] = ctx.Environment,
+                ["region"] = ctx.Platform.Defaults.Region
             }
         });
     }

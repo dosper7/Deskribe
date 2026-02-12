@@ -21,9 +21,9 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Deskribe.Core\Deskribe.Core.csproj" />
     <ProjectReference Include="..\..\src\Deskribe.Sdk\Deskribe.Sdk.csproj" />
-    <ProjectReference Include="..\..\src\Plugins\Deskribe.Plugins.Resources.Postgres\Deskribe.Plugins.Resources.Postgres.csproj" />
-    <ProjectReference Include="..\..\src\Plugins\Deskribe.Plugins.Resources.Redis\Deskribe.Plugins.Resources.Redis.csproj" />
-    <ProjectReference Include="..\..\src\Plugins\Deskribe.Plugins.Resources.Kafka\Deskribe.Plugins.Resources.Kafka.csproj" />
+    <ProjectReference Include="..\..\src\Plugins\Resources\Deskribe.Plugins.Resources.Postgres\Deskribe.Plugins.Resources.Postgres.csproj" />
+    <ProjectReference Include="..\..\src\Plugins\Resources\Deskribe.Plugins.Resources.Redis\Deskribe.Plugins.Resources.Redis.csproj" />
+    <ProjectReference Include="..\..\src\Plugins\Resources\Deskribe.Plugins.Resources.Kafka\Deskribe.Plugins.Resources.Kafka.csproj" />
   </ItemGroup>
 
 </Project>

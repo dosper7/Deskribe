@@ -22,19 +22,23 @@ public class PulumiBackendAdapter : IBackendAdapter
 
     private static BackendApplyResult ApplyInlineMode(DeskribePlan plan)
     {
-        // Inline mode: Log what would be deployed (backward compat for teams without Pulumi installed)
+        // Inline mode: No pulumiProjectDir configured — dry-run with placeholder outputs
+        Console.WriteLine("[Pulumi] No pulumiProjectDir configured. Running in dry-run mode with placeholder outputs.");
+        Console.WriteLine("[Pulumi] To provision real infrastructure, set 'pulumiProjectDir' in platform defaults.");
+
         var outputs = new Dictionary<string, Dictionary<string, string>>();
 
         foreach (var resourcePlan in plan.ResourcePlans)
         {
             outputs[resourcePlan.ResourceType] = resourcePlan.PlannedOutputs;
 
-            Console.WriteLine($"[Pulumi] Would deploy {resourcePlan.ResourceType}:");
+            Console.WriteLine($"[Pulumi] (dry-run) {resourcePlan.ResourceType}:");
             Console.WriteLine($"  Action: {resourcePlan.Action}");
             foreach (var (key, value) in resourcePlan.Configuration)
             {
                 Console.WriteLine($"  {key}: {FormatValue(value)}");
             }
+            Console.WriteLine($"  Outputs: placeholder values (pending real provisioning)");
         }
 
         return new BackendApplyResult
