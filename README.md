@@ -541,6 +541,7 @@ Deskribe/
     Deskribe.Core.Tests/       Merge engine, reference resolver, engine
     Deskribe.Plugins.Tests/    Postgres, Kafka provider tests
   examples/
+    weather-api/               E2E example: Weather API + Azure PostgreSQL
     payments-api/              Sample deskribe.json
     platform-config/           Sample platform config (base + envs)
 ```
@@ -577,6 +578,7 @@ dotnet run --project src/Deskribe.Cli -- validate \
 
 # Generate a plan
 dotnet run --project src/Deskribe.Cli -- plan \
+  -f examples/payments-api/deskribe.json \
   --env dev \
   --platform examples/platform-config \
   --image api=nginx:latest
