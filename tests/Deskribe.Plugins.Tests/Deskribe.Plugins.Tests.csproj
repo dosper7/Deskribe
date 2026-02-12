@@ -21,9 +21,11 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Deskribe.Sdk\Deskribe.Sdk.csproj" />
     <ProjectReference Include="..\..\src\Deskribe.Core\Deskribe.Core.csproj" />
+    <ProjectReference Include="..\..\src\Plugins\Deskribe.Plugins.Backend.Helm\Deskribe.Plugins.Backend.Helm.csproj" />
     <ProjectReference Include="..\..\src\Plugins\Deskribe.Plugins.Resources.Postgres\Deskribe.Plugins.Resources.Postgres.csproj" />
     <ProjectReference Include="..\..\src\Plugins\Deskribe.Plugins.Resources.Redis\Deskribe.Plugins.Resources.Redis.csproj" />
     <ProjectReference Include="..\..\src\Plugins\Deskribe.Plugins.Resources.Kafka\Deskribe.Plugins.Resources.Kafka.csproj" />
+    <ProjectReference Include="..\..\src\Plugins\Deskribe.Plugins.Runtime.Kubernetes\Deskribe.Plugins.Runtime.Kubernetes.csproj" />
   </ItemGroup>
 
 </Project>

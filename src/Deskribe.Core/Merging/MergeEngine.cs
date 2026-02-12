@@ -60,7 +60,9 @@ public class MergeEngine
             Replicas = replicas,
             Cpu = cpu,
             Memory = memory,
-            EnvironmentVariables = service?.Env ?? new()
+            EnvironmentVariables = service?.Env ?? new(),
+            SecretsStrategy = platform.Defaults.SecretsStrategy,
+            ExternalSecretsStore = platform.Defaults.ExternalSecretsStore
         };
     }
 

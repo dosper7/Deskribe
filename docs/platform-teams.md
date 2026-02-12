@@ -386,6 +386,10 @@ public record BackendApplyResult
 }
 ```
 
+> **Note:** The adapter code below is a **complete example you copy and customize**.
+> It is not built into Deskribe. Methods like `MapToModule()`, `GenerateTfVars()`, and
+> `RunTerraform()` are private helpers that your platform team implements.
+
 To create a custom adapter that wraps your existing Terraform modules:
 
 ```csharp
@@ -400,12 +404,15 @@ public class TerraformBackendAdapter : IBackendAdapter
         foreach (var resourcePlan in plan.ResourcePlans)
         {
             // 1. Map resource plan to your Terraform module path
+            //    (you implement this — e.g., "postgres" -> "modules/azure-postgres")
             var modulePath = MapToModule(resourcePlan.ResourceType);
 
             // 2. Generate tfvars from the plan configuration
+            //    (you implement this — serialize plan config to terraform.tfvars.json)
             var tfvars = GenerateTfVars(plan, resourcePlan);
 
             // 3. Run terraform init + apply
+            //    (you implement this — shell out to terraform CLI)
             var tfOutputs = await RunTerraform(modulePath, tfvars, ct);
 
             // 4. Capture outputs
@@ -420,6 +427,74 @@ public class TerraformBackendAdapter : IBackendAdapter
         // Run terraform destroy against the workspace
         var workspace = $"{appName}-{environment}";
         await RunTerraformDestroy(workspace, ct);
+    }
+
+    // ---- Helper methods (you implement these) ----
+
+    private static string MapToModule(string resourceType) => resourceType switch
+    {
+        "postgres" => "modules/azure-postgres",
+        "redis" => "modules/azure-redis",
+        _ => throw new NotSupportedException($"No module for: {resourceType}")
+    };
+
+    private static string GenerateTfVars(DeskribePlan plan, ResourcePlanResult resourcePlan)
+    {
+        // Serialize plan config to terraform.tfvars.json
+        var vars = new Dictionary<string, object?>
+        {
+            ["app_name"] = plan.AppName,
+            ["environment"] = plan.Environment,
+            ["region"] = plan.Platform.Defaults.Region
+        };
+        foreach (var (key, value) in resourcePlan.Configuration)
+            vars[key] = value;
+        return System.Text.Json.JsonSerializer.Serialize(vars);
+    }
+
+    private async Task<Dictionary<string, string>> RunTerraform(
+        string modulePath, string tfvars, CancellationToken ct)
+    {
+        // Write tfvars, run terraform init + apply, parse terraform output -json
+        var workDir = Path.GetFullPath(modulePath);
+        await RunProcess("terraform", "init", workDir, ct);
+        File.WriteAllText(Path.Combine(workDir, "terraform.tfvars.json"), tfvars);
+        await RunProcess("terraform", "apply -auto-approve", workDir, ct);
+        var output = await RunProcess("terraform", "output -json", workDir, ct);
+        return ParseTerraformOutputs(output);
+    }
+
+    private async Task RunTerraformDestroy(string workspace, CancellationToken ct)
+    {
+        await RunProcess("terraform", $"workspace select {workspace}", ".", ct);
+        await RunProcess("terraform", "destroy -auto-approve", ".", ct);
+    }
+
+    private static async Task<string> RunProcess(
+        string exe, string args, string workDir, CancellationToken ct)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo(exe, args)
+        {
+            WorkingDirectory = workDir,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true
+        };
+        using var process = System.Diagnostics.Process.Start(psi)!;
+        var output = await process.StandardOutput.ReadToEndAsync(ct);
+        await process.WaitForExitAsync(ct);
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"{exe} failed: {await process.StandardError.ReadToEndAsync(ct)}");
+        return output;
+    }
+
+    private static Dictionary<string, string> ParseTerraformOutputs(string json)
+    {
+        var doc = System.Text.Json.JsonDocument.Parse(json);
+        var result = new Dictionary<string, string>();
+        foreach (var prop in doc.RootElement.EnumerateObject())
+            result[prop.Name] = prop.Value.GetProperty("value").ToString();
+        return result;
     }
 }
 ```
@@ -695,6 +770,14 @@ public class TerraformBackendAdapter : IBackendAdapter
 ---
 
 ## 5. Integrating with Existing Pulumi Programs
+
+> **Note:** Deskribe ships with a built-in `PulumiBackendAdapter` that supports two modes:
+> - **Inline mode** (default) — logs planned outputs without requiring Pulumi CLI
+> - **Local Program mode** — when `pulumiProjectDir` is set in platform defaults, uses the
+>   Pulumi Automation API to run a real Pulumi project
+>
+> The example below shows how to write your **own** adapter pointing to multiple Pulumi program
+> directories. Methods like `MapResourceToProgram()` are private helpers you implement.
 
 The Pulumi backend adapter uses the [Pulumi Automation API](https://www.pulumi.com/docs/using-pulumi/automation-api/)
 to call your existing Pulumi programs programmatically. The pattern mirrors Terraform

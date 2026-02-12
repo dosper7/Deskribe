@@ -18,6 +18,8 @@ public record WorkloadPlan
     public string Cpu { get; init; } = "250m";
     public string Memory { get; init; } = "512Mi";
     public Dictionary<string, string> EnvironmentVariables { get; init; } = new();
+    public string SecretsStrategy { get; init; } = "opaque";
+    public string? ExternalSecretsStore { get; init; }
 }
 
 public record WorkloadManifest

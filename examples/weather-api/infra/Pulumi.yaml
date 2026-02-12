@@ -1,0 +1,10 @@
+name: weather-api-infra
+runtime: dotnet
+description: Azure infrastructure for Weather API (PostgreSQL Flexible Server)
+config:
+  appName:
+    default: weather-api
+  environment:
+    default: prod-eu
+  region:
+    default: westeurope

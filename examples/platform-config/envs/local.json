@@ -1,0 +1,14 @@
+{
+  "name": "local",
+  "defaults": {
+    "region": "local",
+    "replicas": 1,
+    "cpu": "250m",
+    "memory": "256Mi"
+  },
+  "backends": {
+    "postgres": "helm",
+    "redis": "helm",
+    "kafka.messaging": "helm"
+  }
+}

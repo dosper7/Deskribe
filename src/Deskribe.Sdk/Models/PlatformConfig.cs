@@ -39,6 +39,15 @@ public sealed record PlatformDefaults
 
     [JsonPropertyName("ha")]
     public bool? Ha { get; init; }
+
+    [JsonPropertyName("secretsStrategy")]
+    public string SecretsStrategy { get; init; } = "opaque";
+
+    [JsonPropertyName("externalSecretsStore")]
+    public string? ExternalSecretsStore { get; init; }
+
+    [JsonPropertyName("pulumiProjectDir")]
+    public string? PulumiProjectDir { get; init; }
 }
 
 public sealed record PlatformPolicies

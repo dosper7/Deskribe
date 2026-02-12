@@ -6,6 +6,7 @@
     <ProjectReference Include="..\Plugins\Deskribe.Plugins.Resources.Postgres\Deskribe.Plugins.Resources.Postgres.csproj" />
     <ProjectReference Include="..\Plugins\Deskribe.Plugins.Resources.Redis\Deskribe.Plugins.Resources.Redis.csproj" />
     <ProjectReference Include="..\Plugins\Deskribe.Plugins.Resources.Kafka\Deskribe.Plugins.Resources.Kafka.csproj" />
+    <ProjectReference Include="..\Plugins\Deskribe.Plugins.Backend.Helm\Deskribe.Plugins.Backend.Helm.csproj" />
     <ProjectReference Include="..\Plugins\Deskribe.Plugins.Backend.Pulumi\Deskribe.Plugins.Backend.Pulumi.csproj" />
     <ProjectReference Include="..\Plugins\Deskribe.Plugins.Runtime.Kubernetes\Deskribe.Plugins.Runtime.Kubernetes.csproj" />
   </ItemGroup>

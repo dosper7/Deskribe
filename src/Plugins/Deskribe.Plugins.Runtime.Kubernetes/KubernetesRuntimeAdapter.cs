@@ -37,23 +37,55 @@ public class KubernetesRuntimeAdapter : IRuntimeAdapter
         resources.Add(ns);
         resourceNames.Add($"Namespace/{workload.Namespace}");
 
-        // --- Secret (if env vars exist) ---
+        // --- Secret / ExternalSecret (if env vars exist) ---
         if (workload.EnvironmentVariables.Count > 0)
         {
-            var secret = new V1Secret
+            switch (workload.SecretsStrategy)
             {
-                ApiVersion = "v1",
-                Kind = "Secret",
-                Metadata = new V1ObjectMeta
-                {
-                    Name = $"{workload.AppName}-env",
-                    NamespaceProperty = workload.Namespace
-                },
-                Type = "Opaque",
-                StringData = new Dictionary<string, string>(workload.EnvironmentVariables)
-            };
-            resources.Add(secret);
-            resourceNames.Add($"Secret/{workload.Namespace}/{workload.AppName}-env");
+                case "external-secrets":
+                    var externalSecretYaml = RenderExternalSecret(workload);
+                    resources.Add(externalSecretYaml);
+                    resourceNames.Add($"ExternalSecret/{workload.Namespace}/{workload.AppName}-env");
+                    break;
+
+                case "sealed-secrets":
+                    var sealedSecret = new V1Secret
+                    {
+                        ApiVersion = "v1",
+                        Kind = "Secret",
+                        Metadata = new V1ObjectMeta
+                        {
+                            Name = $"{workload.AppName}-env",
+                            NamespaceProperty = workload.Namespace,
+                            Annotations = new Dictionary<string, string>
+                            {
+                                ["sealedsecrets.bitnami.com/managed"] = "true"
+                            }
+                        },
+                        Type = "Opaque",
+                        StringData = new Dictionary<string, string>(workload.EnvironmentVariables)
+                    };
+                    resources.Add(sealedSecret);
+                    resourceNames.Add($"Secret/{workload.Namespace}/{workload.AppName}-env");
+                    break;
+
+                default: // "opaque"
+                    var secret = new V1Secret
+                    {
+                        ApiVersion = "v1",
+                        Kind = "Secret",
+                        Metadata = new V1ObjectMeta
+                        {
+                            Name = $"{workload.AppName}-env",
+                            NamespaceProperty = workload.Namespace
+                        },
+                        Type = "Opaque",
+                        StringData = new Dictionary<string, string>(workload.EnvironmentVariables)
+                    };
+                    resources.Add(secret);
+                    resourceNames.Add($"Secret/{workload.Namespace}/{workload.AppName}-env");
+                    break;
+            }
         }
 
         // --- Deployment ---
@@ -168,7 +200,8 @@ public class KubernetesRuntimeAdapter : IRuntimeAdapter
         resourceNames.Add($"Service/{workload.Namespace}/{workload.AppName}");
 
         // Serialize all resources to YAML separated by ---
-        var yamlDocuments = resources.Select(r => KubernetesYaml.Serialize(r));
+        var yamlDocuments = resources.Select(r =>
+            r is string raw ? raw : KubernetesYaml.Serialize(r));
         var yaml = string.Join("---\n", yamlDocuments);
 
         return Task.FromResult(new WorkloadManifest
@@ -293,5 +326,29 @@ public class KubernetesRuntimeAdapter : IRuntimeAdapter
             Console.WriteLine($"[Kubernetes] Failed to delete namespace: {ex.Message}");
             Console.WriteLine($"[Kubernetes] Would delete namespace: {namespaceName} (dry-run).");
         }
+    }
+
+    private static string RenderExternalSecret(WorkloadPlan workload)
+    {
+        var storeName = workload.ExternalSecretsStore ?? "default";
+        var dataEntries = string.Join("\n", workload.EnvironmentVariables.Select(kv =>
+            $"    - secretKey: {kv.Key}\n      remoteRef:\n        key: {workload.AppName}-{workload.Environment}-{kv.Key.ToLowerInvariant().Replace("__", "-")}"));
+
+        return $"""
+            apiVersion: external-secrets.io/v1beta1
+            kind: ExternalSecret
+            metadata:
+              name: {workload.AppName}-env
+              namespace: {workload.Namespace}
+            spec:
+              refreshInterval: 1h
+              secretStoreRef:
+                name: {storeName}
+                kind: ClusterSecretStore
+              target:
+                name: {workload.AppName}-env
+              data:
+            {dataEntries}
+            """;
     }
 }

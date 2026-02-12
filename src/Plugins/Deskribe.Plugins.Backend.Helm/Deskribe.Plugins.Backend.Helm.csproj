@@ -5,7 +5,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Pulumi.Automation" Version="3.*" />
+    <PackageReference Include="KubernetesClient" Version="18.0.13" />
   </ItemGroup>
 
   <PropertyGroup>

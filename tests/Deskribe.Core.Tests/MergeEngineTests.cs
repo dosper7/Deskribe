@@ -151,4 +151,37 @@ public class MergeEngineTests
         Assert.Contains("DB", result.EnvironmentVariables.Keys);
         Assert.Equal("@resource(postgres).connectionString", result.EnvironmentVariables["DB"]);
     }
+
+    [Fact]
+    public void MergeWorkloadPlan_PropagatesSecretsStrategy()
+    {
+        var manifest = CreateManifest();
+        var platform = CreatePlatform() with
+        {
+            Defaults = CreatePlatform().Defaults with
+            {
+                SecretsStrategy = "external-secrets",
+                ExternalSecretsStore = "azure-keyvault"
+            }
+        };
+        var envConfig = new EnvironmentConfig { Name = "dev" };
+
+        var result = _engine.MergeWorkloadPlan(manifest, platform, envConfig, "dev", null);
+
+        Assert.Equal("external-secrets", result.SecretsStrategy);
+        Assert.Equal("azure-keyvault", result.ExternalSecretsStore);
+    }
+
+    [Fact]
+    public void MergeWorkloadPlan_DefaultsSecretsStrategyToOpaque()
+    {
+        var manifest = CreateManifest();
+        var platform = CreatePlatform();
+        var envConfig = new EnvironmentConfig { Name = "dev" };
+
+        var result = _engine.MergeWorkloadPlan(manifest, platform, envConfig, "dev", null);
+
+        Assert.Equal("opaque", result.SecretsStrategy);
+        Assert.Null(result.ExternalSecretsStore);
+    }
 }

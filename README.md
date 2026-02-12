@@ -554,6 +554,52 @@ dotnet test
 
 ---
 
+## E2E Example: Weather API
+
+A full working example deploying a Weather API + Postgres to both local K8s and Azure.
+See [`examples/weather-api/README.md`](examples/weather-api/README.md) for the complete guide.
+
+### Deploy to Local K8s (Docker Desktop)
+
+```bash
+# Build the image
+docker build -t weather-api:local -f examples/weather-api/src/WeatherApi/Dockerfile examples/weather-api/src/WeatherApi
+
+# Deploy (Postgres via Helm + app to local K8s)
+dotnet run --project src/Deskribe.Cli -- apply \
+  -f examples/weather-api/deskribe.json \
+  --env local \
+  --platform examples/platform-config \
+  --image api=weather-api:local
+
+# Test
+kubectl port-forward svc/weather-api -n weather-api-local 8080:80
+curl http://localhost:8080/weatherforecast
+```
+
+### Deploy to Azure
+
+```bash
+# Deploy (Postgres via Pulumi + app to AKS)
+dotnet run --project src/Deskribe.Cli -- apply \
+  -f examples/weather-api/deskribe.json \
+  --env prod-eu \
+  --platform examples/platform-config \
+  --image api=myacr.azurecr.io/weather-api:v1
+```
+
+### Secrets Management
+
+Deskribe supports three secrets strategies, configured in platform defaults:
+
+| Strategy | Description | Config |
+|----------|-------------|--------|
+| `opaque` (default) | Standard K8s `V1Secret` with `stringData` | `"secretsStrategy": "opaque"` |
+| `external-secrets` | `ExternalSecret` CRD synced from Azure Key Vault / AWS Secrets Manager | `"secretsStrategy": "external-secrets"` |
+| `sealed-secrets` | `V1Secret` with Bitnami Sealed Secrets annotation | `"secretsStrategy": "sealed-secrets"` |
+
+---
+
 ## Philosophy
 
 1. **One file to rule them all** — `deskribe.json` is the single source of truth for what a service needs

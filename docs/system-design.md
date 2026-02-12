@@ -1206,12 +1206,33 @@ class does and how they connect.
   Name: "pulumi"
 
   ApplyAsync:
-    - MVP implementation: logs what would be deployed
-    - Returns planned outputs as actual outputs
-    - In production: would use Pulumi.Automation.LocalWorkspace
+    Mode 1 - Inline (default, no pulumiProjectDir set):
+      - Logs what would be deployed
+      - Returns planned outputs as actual outputs
+
+    Mode 2 - Local Program (pulumiProjectDir set in platform defaults):
+      - Uses Pulumi.Automation.LocalWorkspace to run a real Pulumi project
+      - Sets stack config from DeskribePlan (appName, environment, region, resources)
+      - Runs 'pulumi up' and captures stack outputs
+      - Returns real infrastructure outputs (connection strings, endpoints)
 
   DestroyAsync:
     - Logs: "[Pulumi] Would destroy stack: {app}-{env}"
+```
+
+**Helm Backend Adapter**:
+
+```
+  Name: "helm"
+
+  ApplyAsync:
+    - Runs 'helm upgrade --install' for each resource using Bitnami charts
+    - Reads K8s secrets post-install to extract generated passwords
+    - Builds connection strings from discovered endpoints and credentials
+    - Supports postgres, redis, kafka.messaging out of the box
+
+  DestroyAsync:
+    - Lists releases in namespace and runs 'helm uninstall' for each
 ```
 
 **Kubernetes Runtime Adapter**:
