@@ -475,7 +475,7 @@ registers with the PluginHost at startup.
       +-- IBackendAdapter              -- Provisions/destroys infra
       |     Name: string               -- "pulumi", "terraform"
       |     ApplyAsync(plan)           -- Returns resource outputs
-      |     DestroyAsync(app, env)
+      |     DestroyAsync(app, env, platform)
       |
       +-- IRuntimeAdapter              -- Deploys workloads
       |     Name: string               -- "kubernetes", "ecs"
@@ -896,7 +896,7 @@ public interface IBackendAdapter
 {
     string Name { get; }
     Task<BackendApplyResult> ApplyAsync(DeskribePlan plan, CancellationToken ct);
-    Task DestroyAsync(string appName, string environment, CancellationToken ct);
+    Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct);
 }
 
 // Deploys workloads (Kubernetes, ECS, etc.)
@@ -1203,18 +1203,17 @@ class does and how they connect.
   Name: "pulumi"
 
   ApplyAsync:
-    Mode 1 - Inline (default, no pulumiProjectDir set):
-      - Logs what would be deployed
-      - Returns planned outputs as actual outputs
+    Requires pulumiProjectDir in platform defaults (fails with error if not set).
+    - Uses Pulumi.Automation.LocalWorkspace to run a real Pulumi project
+    - Sets stack config from DeskribePlan (appName, environment, region, resources)
+    - Runs 'pulumi up' and captures stack outputs
+    - Returns real infrastructure outputs (connection strings, endpoints)
 
-    Mode 2 - Local Program (pulumiProjectDir set in platform defaults):
-      - Uses Pulumi.Automation.LocalWorkspace to run a real Pulumi project
-      - Sets stack config from DeskribePlan (appName, environment, region, resources)
-      - Runs 'pulumi up' and captures stack outputs
-      - Returns real infrastructure outputs (connection strings, endpoints)
-
-  DestroyAsync:
-    - Logs: "[Pulumi] Would destroy stack: {app}-{env}"
+  DestroyAsync(appName, environment, platform):
+    Requires pulumiProjectDir in platform defaults (throws if not set).
+    - Creates or selects the Pulumi stack "{appName}-{environment}"
+    - Runs stack.DestroyAsync to tear down all resources
+    - Removes the stack from the workspace
 ```
 
 **Kubernetes Runtime Adapter**:
@@ -1249,7 +1248,7 @@ class does and how they connect.
   ApplyAsync(manifest):
     - Connects to K8s cluster via kubeconfig
     - For each resource: try read, if exists -> update, if 404 -> create
-    - Gracefully handles no-cluster scenario (dry-run mode)
+    - Requires a valid kubeconfig (fails if no cluster is available)
 
   DestroyAsync(namespace):
     - Deletes the entire namespace (cascading delete)
@@ -1552,39 +1551,26 @@ For each resource plan, the engine looks up the backend and calls ApplyAsync:
   backend = PluginHost.GetBackendAdapter("pulumi") --> PulumiBackendAdapter
 
   PulumiBackendAdapter.ApplyAsync(plan):
-    [Pulumi] (dry-run) postgres:
-      Action: create
-      version: 16
-      size: m
-      ha: True
-      appName: payments-api
-      environment: prod
-      region: westeurope
-      Outputs: placeholder values (pending real provisioning)
+    [Pulumi] Using Local Program mode with project: infra/
+    [Pulumi] Running 'pulumi up' for stack payments-api-prod...
+    ... (Pulumi provisions Azure resources: Resource Group, PostgreSQL, Redis, etc.)
+    [Pulumi] Stack update complete: succeeded
 
-    [Pulumi] (dry-run) redis:
-      Action: create
-      size: s, ha: True, ...
-
-    [Pulumi] (dry-run) kafka.messaging:
-      Action: create
-      topics: [payments.transactions], ...
-
-  Returns BackendApplyResult with resource outputs (placeholders in dry-run):
+  Returns BackendApplyResult with real resource outputs:
     resourceOutputs = {
       "postgres": {
-        "connectionString": "<pending:payments-api-postgres>",
-        "host": "<pending:payments-api-postgres-host>",
+        "connectionString": "Host=pg-payments-api-prod.postgres.database.azure.com;Port=5432;...",
+        "endpoint": "pg-payments-api-prod.postgres.database.azure.com",
         "port": "5432"
       },
       "redis": {
-        "endpoint": "<pending:payments-api-redis>",
-        "host": "<pending:payments-api-redis-host>",
-        "port": "6379"
+        "endpoint": "redis-payments-api-prod.redis.cache.windows.net:6380",
+        "host": "redis-payments-api-prod.redis.cache.windows.net",
+        "port": "6380"
       },
       "kafka.messaging": {
-        "endpoint": "<pending:payments-api-kafka>",
-        "bootstrapServers": "<pending:payments-api-kafka-bootstrap>"
+        "endpoint": "kafka-payments-api-prod.servicebus.windows.net:9093",
+        "bootstrapServers": "kafka-payments-api-prod.servicebus.windows.net:9093"
       }
     }
 ```

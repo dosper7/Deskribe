@@ -375,7 +375,7 @@ public interface IBackendAdapter
 {
     string Name { get; }
     Task<BackendApplyResult> ApplyAsync(DeskribePlan plan, CancellationToken ct = default);
-    Task DestroyAsync(string appName, string environment, CancellationToken ct = default);
+    Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct = default);
 }
 
 public record BackendApplyResult
@@ -422,7 +422,7 @@ public class TerraformBackendAdapter : IBackendAdapter
         return new BackendApplyResult { Success = true, ResourceOutputs = outputs };
     }
 
-    public async Task DestroyAsync(string appName, string environment, CancellationToken ct)
+    public async Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)
     {
         // Run terraform destroy against the workspace
         var workspace = $"{appName}-{environment}";
@@ -693,7 +693,7 @@ public class TerraformBackendAdapter : IBackendAdapter
         return new BackendApplyResult { Success = true, ResourceOutputs = outputs };
     }
 
-    public async Task DestroyAsync(string appName, string environment, CancellationToken ct)
+    public async Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)
     {
         // Iterate known modules and destroy each workspace
         foreach (var moduleDir in Directory.GetDirectories(_modulesRoot))
@@ -771,10 +771,9 @@ public class TerraformBackendAdapter : IBackendAdapter
 
 ## 5. Integrating with Existing Pulumi Programs
 
-> **Note:** Deskribe ships with a built-in `PulumiBackendAdapter` that supports two modes:
-> - **Inline mode** (default) — logs planned outputs without requiring Pulumi CLI
-> - **Local Program mode** — when `pulumiProjectDir` is set in platform defaults, uses the
->   Pulumi Automation API to run a real Pulumi project
+> **Note:** Deskribe ships with a built-in `PulumiBackendAdapter` that requires `pulumiProjectDir`
+> to be set in platform defaults. It uses the Pulumi Automation API to run a real Pulumi project
+> (Local Program mode).
 >
 > The example below shows how to write your **own** adapter pointing to multiple Pulumi program
 > directories. Methods like `MapResourceToProgram()` are private helpers you implement.
@@ -862,7 +861,7 @@ public class PulumiBackendAdapter : IBackendAdapter
         return new BackendApplyResult { Success = true, ResourceOutputs = outputs };
     }
 
-    public async Task DestroyAsync(string appName, string environment, CancellationToken ct)
+    public async Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)
     {
         var stackName = $"{appName}-{environment}";
         // Destroy each program's stack
@@ -2099,7 +2098,7 @@ public interface IBackendAdapter
 {
     string Name { get; }
     Task<BackendApplyResult> ApplyAsync(DeskribePlan plan, CancellationToken ct = default);
-    Task DestroyAsync(string appName, string environment, CancellationToken ct = default);
+    Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct = default);
 }
 ```
 

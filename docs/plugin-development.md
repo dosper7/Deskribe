@@ -309,7 +309,7 @@ public class TerraformBackendAdapter : IBackendAdapter
         return new BackendApplyResult { Success = true, ResourceOutputs = outputs };
     }
 
-    public async Task DestroyAsync(string appName, string environment, CancellationToken ct)
+    public async Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)
     {
         var workDir = Path.Combine(
             Path.GetTempPath(), "deskribe-tf", $"{appName}-{environment}");
@@ -583,8 +583,8 @@ public class AcaPlugin : IPlugin
 The Kubernetes runtime adapter (`KubernetesRuntimeAdapter`) uses the official
 `KubernetesClient` NuGet package (version 18.0.13). It renders four resource types
 (Namespace, Secret, Deployment, Service) and applies them using a create-or-update
-pattern with `HttpOperationException` catch for 404-based upserts. If no cluster is
-available, it falls back to a dry-run log.
+pattern with `HttpOperationException` catch for 404-based upserts. A valid kubeconfig
+is required — the adapter will throw if no cluster is available.
 
 ---
 
@@ -1229,7 +1229,7 @@ In `src/Deskribe.Aspire/DeskribeAspireExtensions.cs`:
 ### 9.4 Add to the Solution
 
 ```bash
-dotnet sln Deskribe.slnx add src/Plugins/Deskribe.Plugins.Resources.MongoDB/Deskribe.Plugins.Resources.MongoDB.csproj
+dotnet sln Deskribe.slnx add src/Plugins/Resources/MongoDB/Deskribe.Plugins.Resources.MongoDB.csproj
 ```
 
 ---

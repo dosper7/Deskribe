@@ -530,13 +530,13 @@ Deskribe/
     Deskribe.ServiceDefaults/  OpenTelemetry, health checks
     Plugins/
       Backends/
-        Deskribe.Plugins.Backend.Pulumi/
+        Pulumi/
       Resources/
-        Deskribe.Plugins.Resources.Postgres/
-        Deskribe.Plugins.Resources.Redis/
-        Deskribe.Plugins.Resources.Kafka/
+        Postgres/
+        Redis/
+        Kafka/
       Runtimes/
-        Deskribe.Plugins.Runtime.Kubernetes/
+        Kubernetes/
   tests/
     Deskribe.Core.Tests/       Merge engine, reference resolver, engine
     Deskribe.Plugins.Tests/    Postgres, Kafka provider tests
