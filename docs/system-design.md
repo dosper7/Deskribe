@@ -589,7 +589,16 @@ When the engine processes a resource, it asks the PluginRegistry:
 
   Phase 5: GENERATE (deskribe generate)
   =====================================
-  Alternative to apply -- generates artifacts without deploying:
+  Alternative to apply -- generates artifacts without deploying.
+  Accepts --output-format: "all" | "k8s-only" | "terraform-only"
+
+  If format is "all" or "k8s-only":
+    runtime = PluginRegistry.GetRuntimePlugin(runtimeName)
+    yaml = runtime.RenderAsync(workload)
+    GenerateKustomizeStructure(yaml, outputDir, env)
+    --> Produces base/ + overlays/{env}/ Kustomize layout
+
+  If format is "all" or "terraform-only":
     provisioner = PluginRegistry.GetProvisioner(provisionerName)
     provisioner.GenerateArtifactsAsync(plan)
 ```
@@ -1115,8 +1124,10 @@ class does and how they connect.
     ApplyAsync(plan)
       --> ProvisionerApply -> ResolveRefs -> RuntimeRender -> RuntimeApply
 
-    GenerateAsync(plan)
+    GenerateAsync(manifestPath, platformPath, env, outputDir, images?, outputFormat?, ct)
+      --> Load -> Merge -> Plan -> RuntimeRender -> GenerateKustomizeStructure
       --> ProvisionerGenerateArtifacts (deskribe generate command)
+      outputFormat: "all" | "k8s-only" | "terraform-only"
 
     DestroyAsync(manifestPath, platformPath, env)
       --> Load -> RuntimeDestroy(namespace) -> ProvisionerDestroy(app, env)

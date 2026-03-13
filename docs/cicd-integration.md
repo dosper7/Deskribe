@@ -35,17 +35,18 @@ Every Deskribe CI pipeline follows the same flow. The GENERATE stage is optional
   | dotnet   |     | deskribe |     | desk |     | deskribe |     | Manual  |     | desk  |
   | build    |     | validate |     | plan |     | generate |     | gate or |     | apply |
   | dotnet   |     |          |     |      |     |          |     | auto    |     |       |
-  | test     |     | Exit 1   |     | Post |     | Produces |     |         |     | Prov. |
-  | docker   |     | = fail   |     | as   |     | tfvars,  |     |         |     | infra |
-  | push     |     | pipeline |     | PR   |     | helm-val |     |         |     | + K8s |
-  |          |     |          |     | cmnt |     | bindings |     |         |     |       |
+  | test     |     | Exit 1   |     | Post |     | --output |     |         |     | Prov. |
+  | docker   |     | = fail   |     | as   |     | -format  |     |         |     | infra |
+  | push     |     | pipeline |     | PR   |     |          |     |         |     | + K8s |
+  |          |     |          |     | cmnt |     | k8s-only |     |         |     |       |
   +----------+     +----------+     +------+     +----------+     +---------+     +-------+
        |                |               |              |                |              |
        v                v               v              v                v              v
-   Container       Policy check     Human-readable   terraform.     Gate before   Infrastructure
-   image ready     before plan      diff review      tfvars.json    production    provisioned +
-                                                     helm-values                  app deployed
-                                                     .yaml
+   Container       Policy check     Human-readable   Kustomize      Gate before   Infrastructure
+   image ready     before plan      diff review      base/ +        production    provisioned +
+                                                     overlays/                    app deployed
+                                                     terraform.
+                                                     tfvars.json
                                                      bindings.json
 ```
 
@@ -54,7 +55,7 @@ Every Deskribe CI pipeline follows the same flow. The GENERATE stage is optional
 1. **Build first** -- compile, test, and push the container image before touching infrastructure.
 2. **Validate early** -- catch policy violations before generating a plan. This is cheap and fast.
 3. **Plan for visibility** -- always generate a plan so reviewers can see exactly what will change.
-4. **Generate for GitOps** -- optionally produce `terraform.tfvars.json`, `helm-values.yaml`, and `bindings.json` for review or consumption by external tools (Terraform Cloud, ArgoCD).
+4. **Generate for GitOps** -- optionally produce Kustomize manifests (`base/` + `overlays/{env}/`), `terraform.tfvars.json`, and `bindings.json` for review or consumption by external tools (ArgoCD, Terraform Cloud). Use `--output-format` to control what is generated (`all`, `k8s-only`, `terraform-only`).
 5. **Gate before apply** -- never apply to production without an approval step (manual or automated).
 6. **Apply atomically** -- apply provisions infrastructure and deploys the workload in one step.
 
@@ -65,7 +66,7 @@ Every Deskribe CI pipeline follows the same flow. The GENERATE stage is optional
 Below is a complete, production-ready workflow that handles the entire lifecycle:
 
 ```yaml
-# .github/workflows/deploy.yml
+# .github/workflows/deskribe-deploy.yml
 #
 # Triggers:
 #   - push to main      -> build + validate + plan (posts plan as PR comment)
@@ -310,7 +311,8 @@ jobs:
             -f deskribe.json \
             --env ${{ env.TARGET_ENV }} \
             -p ${{ env.PLATFORM_CONFIG_PATH }} \
-            -o ./generated/
+            -o ./generated/ \
+            --output-format k8s-only
 
       - name: Upload generated artifacts
         uses: actions/upload-artifact@v4
@@ -419,10 +421,10 @@ The `deskribe generate` command produces standalone artifacts that can be commit
 
 ```
 Developer edits deskribe.json
-  -> CI runs `deskribe validate` + `deskribe generate`
-  -> PR to platform repo with generated artifacts
-  -> Platform team reviews terraform.tfvars.json + helm-values.yaml
-  -> Merge triggers Terraform Cloud + ArgoCD
+  -> CI runs `deskribe validate` + `deskribe generate --output-format k8s-only`
+  -> PR to deployments repo with generated Kustomize manifests
+  -> Platform team reviews base/ + overlays/ changes
+  -> Merge triggers ArgoCD / Flux to sync K8s cluster
 ```
 
 **Example command:**
@@ -432,16 +434,19 @@ deskribe generate \
   -f deskribe.json \
   --env prod \
   -p ./platform-config \
-  -o ./generated/
+  -o ./generated/ \
+  --output-format k8s-only
 ```
 
-This produces three files in the output directory:
+This produces a Kustomize directory structure in the output directory:
 
-| File                     | Purpose                                                     |
-|--------------------------|-------------------------------------------------------------|
-| `terraform.tfvars.json`  | Variable values for Terraform to provision infrastructure   |
-| `helm-values.yaml`       | Helm values for ArgoCD or `helm install` to deploy workloads|
-| `bindings.json`          | Connection strings and resource references for the workload |
+| Path                                  | Purpose                                                     |
+|---------------------------------------|-------------------------------------------------------------|
+| `base/deployment.yaml`                | Base K8s Deployment + Service manifest                      |
+| `base/kustomization.yaml`             | Kustomize base referencing deployment.yaml                  |
+| `overlays/{env}/kustomization.yaml`   | Environment overlay with replica, image, and resource patches|
+| `terraform.tfvars.json`               | Variable values for Terraform to provision infrastructure (when format is `all` or `terraform-only`)  |
+| `bindings.json`                       | Connection strings and resource references for the workload |
 
 The `-p` flag (short for `--platform`) points to the platform config directory, and `-o` specifies the output directory for generated artifacts.
 

@@ -144,13 +144,26 @@ deskribe plan -f deskribe.json --env prod --platform ./platform-config \
 ### Step 5: Generate Artifacts (for GitOps / CI/CD)
 
 ```bash
+# Generate everything (Terraform + K8s + Kustomize)
 deskribe generate -f deskribe.json --env prod -p ./platform-config -o ./generated/
+
+# Generate only K8s manifests + Kustomize overlays (fastest for K8s/Kustomize pipelines)
+deskribe generate -f deskribe.json --env prod -p ./platform-config -o ./generated/ \
+  --output-format k8s-only
+
+# Generate only Terraform artifacts
+deskribe generate -f deskribe.json --env prod -p ./platform-config -o ./generated/ \
+  --output-format terraform-only
 ```
 
-Produces:
+Produces (with `--output-format all`):
 - `terraform.tfvars.json` — resource config for Terraform modules
 - `helm-values.yaml` — workload config for Helm/ArgoCD deployments
 - `bindings.json` — machine-readable resource binding manifest
+- `{app-name}/base/deployment.yaml` — K8s Namespace + Deployment + Service
+- `{app-name}/base/secrets.yaml` — K8s Secret or ExternalSecret
+- `{app-name}/base/kustomization.yaml` — Kustomize base
+- `{app-name}/overlays/{env}/kustomization.yaml` — per-env overlay (replicas, image, resources)
 
 ### Step 6: Apply (Direct Deployment)
 
@@ -183,6 +196,8 @@ This reads the manifest and spins up real containers:
 | `"type": "redis"` | Redis container + RedisInsight UI |
 | `"type": "kafka.messaging"` | Kafka container + Kafka UI |
 
+The `payments-api` sample project also starts alongside these containers, with connection strings automatically injected.
+
 Open the Aspire dashboard at `http://localhost:15888`.
 
 ### Wiring in your AppHost
@@ -192,7 +207,12 @@ var builder = DistributedApplication.CreateBuilder(args);
 
 var resources = builder.AddDeskribeManifest("path/to/deskribe.json");
 
-builder.AddProject<Projects.MyService>("my-service")
+// Your application — gets all resource connections auto-wired
+builder.AddProject<Projects.PaymentsApi>("payments-api")
+    .WithDeskribeResources(resources);
+
+// Deskribe Web UI — dashboard for visibility
+builder.AddProject<Projects.Deskribe_Web>("deskribe-web")
     .WithDeskribeResources(resources);
 
 builder.Build().Run();
@@ -274,17 +294,22 @@ Environment variables reference provisioned resources:
 
 ## Web Dashboard
 
-Deskribe includes a web UI built with Blazor WASM + MudBlazor:
+Deskribe includes a web UI built with Blazor Server:
 
 ```bash
 dotnet run --project src/Deskribe.Web
+# Or via Aspire (recommended — starts all containers too):
+dotnet run --project src/Deskribe.AppHost
 ```
 
 Features:
-- Application discovery and listing
-- Resource overview across all apps
-- Plan generation and validation per environment
-- Plugin registry with schema-driven resource metadata
+- **Dynamic app discovery** — scans `examples/` for `deskribe.json` manifests automatically
+- **Dashboard** — application count, environments, resources, real status tracking
+- **Resource overview** — per-type counts (Postgres, Redis, Kafka) across all apps
+- **Plan Viewer** — generate plans, view K8s YAML previews, Apply and Destroy with confirmation dialogs
+- **Environment switcher** — navigate between dev/prod per application
+- **Container image input** — set the image from the UI before planning
+- **Real status tracking** — tracks `Unknown → Planned → Applied → Error → Destroyed` per app/env
 
 ### API Endpoints
 
@@ -314,6 +339,20 @@ Three strategies, configured in platform defaults:
 
 ## CI/CD Integration
 
+Deskribe ships a GitHub Actions workflow at [`.github/workflows/deskribe-deploy.yml`](.github/workflows/deskribe-deploy.yml) that:
+
+1. **Builds** your app, runs tests, pushes a Docker image
+2. **Validates** the manifest against platform policies (matrix: dev, prod)
+3. **Generates** K8s manifests + Kustomize overlays via `deskribe generate --output-format k8s-only`
+4. **Pushes** the generated manifests to a separate deployments repo (e.g. `more-deployments`)
+5. **Posts** a plan summary as a PR comment on pull requests
+
+### Quick Setup
+
+1. Place `deskribe.json` in your app repo root
+2. Set GitHub secrets: `DEPLOYMENTS_REPO_TOKEN` (PAT with write access to the deployments repo)
+3. Set GitHub variables: `DEPLOYMENTS_REPO` (e.g. `RELEX-Solutions/more-deployments`)
+
 ### GitHub Actions Example
 
 ```yaml
@@ -331,32 +370,31 @@ jobs:
           dotnet-version: '10.0.x'
 
       - name: Validate
-        run: |
-          dotnet run --project src/Deskribe.Cli -- validate \
-            -f deskribe.json --env prod --platform platform-config
+        run: deskribe validate -f deskribe.json --env prod --platform platform-config
 
-      - name: Generate Artifacts
+      - name: Generate K8s Manifests
         run: |
-          dotnet run --project src/Deskribe.Cli -- generate \
-            -f deskribe.json --env prod -p platform-config -o ./generated \
-            --image api=${{ github.repository }}:${{ github.sha }}
+          deskribe generate -f deskribe.json --env prod \
+            -p platform-config -o ./output \
+            --image api=${{ github.repository }}:${{ github.sha }} \
+            --output-format k8s-only
 
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: deployment-artifacts
-          path: ./generated/
+      - name: Push to deployments repo
+        run: |
+          # Copy output/{app-name}/ into your deployments repo
+          # Your existing GitHub Actions apply them via kubectl apply -k
 ```
 
 ### GitOps Flow
 
 ```
 Developer edits deskribe.json
-    → CI runs `deskribe validate` + `deskribe generate`
-    → PR to platform repo with generated artifacts
-    → Platform team reviews
-    → Merge triggers Terraform Cloud + ArgoCD
+    → CI runs `deskribe validate` + `deskribe generate --output-format k8s-only`
+    → Generated Kustomize manifests pushed to deployments repo
+    → Existing pipeline applies via kubectl apply -k / ArgoCD
 ```
+
+See [docs/cicd-integration.md](docs/cicd-integration.md) for the full guide.
 
 ---
 
@@ -364,12 +402,15 @@ Developer edits deskribe.json
 
 ```
 Deskribe/
+  .github/
+    workflows/
+      deskribe-deploy.yml      GitHub Actions CI/CD workflow
   src/
     Deskribe.Sdk/              Plugin contracts, models, ResourceDescriptor
     Deskribe.Core/             Engine, config loader, merge, validation, resolution
     Deskribe.Cli/              CLI (validate, plan, apply, destroy, generate)
-    Deskribe.Web/              Web host + Minimal API
-    Deskribe.Web.Client/       Blazor WASM + MudBlazor dashboard
+    Deskribe.Web/              Blazor Server web dashboard + Minimal API
+    Deskribe.Web.Client/       Blazor WASM client (alternative UI)
     Deskribe.Aspire/           Manifest-to-Aspire bridge + projections
     Deskribe.AppHost/          Aspire orchestrator
     Deskribe.ServiceDefaults/  OpenTelemetry, health checks
@@ -387,32 +428,62 @@ Deskribe/
     Deskribe.Core.Tests/       Engine, merge, reference resolver tests
     Deskribe.Plugins.Tests/    Postgres, Kafka, secrets strategy tests
   examples/
-    weather-api/               E2E example: Weather API + Azure PostgreSQL via Pulumi
-    payments-api/              Sample deskribe.json with Postgres + Redis + Kafka
+    payments-api/
+      deskribe.json            Manifest: Postgres + Redis + Kafka
+      src/                     .NET Minimal API sample project
+        Program.cs             Wires Postgres (EF), Redis, Kafka producer
+        Endpoints/             POST/GET /api/payments
+        Models/                Payment entity
+        Data/                  EF Core DbContext
+        Dockerfile             Multi-stage build
     platform-config/           Sample platform config (split-file format)
+      base.json
+      envs/
+        dev.json
+        prod.json
 ```
 
 ---
 
-## E2E Example: Weather API on Azure
+## E2E Example: Payments API
 
-A complete working example deploying a Weather API + Postgres to Azure (AKS + Azure PostgreSQL Flexible Server via Pulumi).
+A complete working example with a .NET Minimal API that uses Postgres (EF Core), Redis (caching), and Kafka (event publishing).
 
-See [`examples/weather-api/README.md`](examples/weather-api/README.md) for the full guide.
+### Local Dev (Aspire)
 
 ```bash
-# Local dev
+# Starts payments-api + Postgres + Redis + Kafka + Deskribe Web UI
 dotnet run --project src/Deskribe.AppHost
 
-# Deploy to Azure
-dotnet run --project src/Deskribe.Cli -- apply \
-  -f examples/weather-api/deskribe.json \
-  --env prod --platform examples/platform-config \
-  --image api=myacr.azurecr.io/weather-api:v1
+# Test the API
+curl http://localhost:{port}/api/payments                           # GET  — list payments
+curl -X POST http://localhost:{port}/api/payments \
+  -H "Content-Type: application/json" \
+  -d '{"amount": 99.99, "currency": "EUR"}'                        # POST — create payment
+curl http://localhost:{port}/api/payments/{id}                      # GET  — get by ID (Redis cached)
+curl http://localhost:{port}/health                                 # GET  — health check
+```
 
-# Verify
-kubectl port-forward svc/weather-api -n weather-api-prod 8080:80
-curl http://localhost:8080/weatherforecast
+### Generate K8s Manifests
+
+```bash
+deskribe generate \
+  -f examples/payments-api/deskribe.json \
+  --env prod --platform examples/platform-config \
+  -o ./output --output-format k8s-only \
+  --image api=ghcr.io/acme/payments-api:v1.2.3
+```
+
+### Deploy to Kubernetes
+
+```bash
+deskribe apply \
+  -f examples/payments-api/deskribe.json \
+  --env prod --platform examples/platform-config \
+  --image api=ghcr.io/acme/payments-api:v1.2.3
+
+# Or apply the generated Kustomize overlays directly:
+kubectl apply -k output/payments-api/overlays/prod
 ```
 
 ---

@@ -1894,7 +1894,7 @@ between applications and environments.
 A typical secure CI/CD pipeline using Deskribe:
 
 ```yaml
-# .github/workflows/deploy.yml
+# .github/workflows/deskribe-deploy.yml
 name: Deploy
 
 on:
@@ -1962,16 +1962,22 @@ deskribe generate \
   -f deskribe.json \
   --env prod \
   --platform ./platform-config \
-  --output ./generated
+  --output ./generated \
+  --output-format k8s-only
 ```
 
 This generates the following files without applying anything:
 
 ```
 generated/
-  terraform.tfvars.json    # Input variables for Terraform provisioner
-  helm-values.yaml         # Helm values for Kubernetes runtime plugin
-  bindings.json            # Resource bindings (resolved references, outputs)
+  base/
+    deployment.yaml          # Base K8s Deployment + Service manifest
+    kustomization.yaml       # Kustomize base referencing deployment.yaml
+  overlays/
+    prod/
+      kustomization.yaml     # Env overlay with replica, image, resource patches
+  terraform.tfvars.json      # Input variables for Terraform (when format is all/terraform-only)
+  bindings.json              # Resource bindings (resolved references, outputs)
 ```
 
 You can then commit these files to a GitOps repo (e.g., for ArgoCD or Flux) or
