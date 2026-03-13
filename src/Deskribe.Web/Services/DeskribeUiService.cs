@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Deskribe.Core.Config;
 using Deskribe.Core.Engine;
+using Deskribe.Sdk;
 using Deskribe.Sdk.Models;
 
 namespace Deskribe.Web.Services;

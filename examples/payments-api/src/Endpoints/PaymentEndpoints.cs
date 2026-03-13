@@ -104,7 +104,7 @@ public static class PaymentEndpoints
             if (cached.HasValue)
             {
                 logger.LogDebug("Cache hit for payment {Id}", id);
-                var cachedPayment = JsonSerializer.Deserialize<PaymentResponse>(cached!);
+                var cachedPayment = JsonSerializer.Deserialize<PaymentResponse>((string)cached!);
                 return Results.Ok(cachedPayment);
             }
         }

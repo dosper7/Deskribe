@@ -1,0 +1,6 @@
+{
+  "name": "dev",
+  "replicas": 2,
+  "cpu": "250m",
+  "memory": "512Mi"
+}
