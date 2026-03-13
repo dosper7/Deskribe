@@ -1,0 +1,251 @@
+# .github/workflows/deskribe-deploy.yml
+#
+# Deskribe CI/CD Pipeline
+# Generates K8s manifests via Deskribe and pushes them to a deployments repo.
+#
+# Usage:
+#   1. Place deskribe.json in your app repo root
+#   2. Set the secrets/vars listed below
+#   3. This workflow will: build → validate → generate K8s manifests → push to deployments repo
+#
+# Required secrets:
+#   DEPLOYMENTS_REPO_TOKEN — PAT with write access to the deployments repo
+#
+# Required variables:
+#   DEPLOYMENTS_REPO — e.g. "RELEX-Solutions/more-deployments"
+#   PLATFORM_CONFIG_REPO — e.g. "your-org/platform-config" (or use local examples/platform-config)
+
+name: Deskribe Deploy
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment (dev, prod)"
+        required: true
+        default: "dev"
+        type: choice
+        options:
+          - dev
+          - prod
+      action:
+        description: "Action to perform"
+        required: true
+        default: "plan"
+        type: choice
+        options:
+          - plan
+          - generate
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_VERSION: "10.0.x"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  # Where the generated K8s manifests will be pushed
+  DEPLOYMENTS_REPO: ${{ vars.DEPLOYMENTS_REPO || 'RELEX-Solutions/more-deployments' }}
+  # Where platform config lives (can be a separate repo or local path)
+  PLATFORM_CONFIG_PATH: ./platform-config
+
+jobs:
+  # ================================================================
+  # Job 1: Build, test, and push the container image
+  # ================================================================
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout application repo
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Restore & Build
+        run: dotnet build --configuration Release
+
+      - name: Test
+        run: dotnet test --no-build --configuration Release --verbosity normal
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=sha-
+            type=ref,event=branch
+
+      - name: Login to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # ================================================================
+  # Job 2: Validate manifest against platform policies
+  # ================================================================
+  validate:
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        environment: [dev, prod]
+
+    steps:
+      - name: Checkout application repo
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install Deskribe CLI
+        run: dotnet tool install --global deskribe-cli || true
+
+      - name: Validate manifest (${{ matrix.environment }})
+        run: |
+          deskribe validate \
+            -f deskribe.json \
+            --env ${{ matrix.environment }} \
+            --platform ${{ env.PLATFORM_CONFIG_PATH }}
+
+  # ================================================================
+  # Job 3: Generate K8s manifests and push to deployments repo
+  # ================================================================
+  generate:
+    needs: [build, validate]
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    env:
+      TARGET_ENV: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - name: Checkout application repo
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install Deskribe CLI
+        run: dotnet tool install --global deskribe-cli || true
+
+      - name: Generate K8s manifests
+        run: |
+          deskribe generate \
+            -f deskribe.json \
+            --env ${{ env.TARGET_ENV }} \
+            --platform ${{ env.PLATFORM_CONFIG_PATH }} \
+            --image api=${{ needs.build.outputs.image-tag }} \
+            -o ./output \
+            --output-format k8s-only
+
+      - name: Show generated artifacts
+        run: find ./output -type f | head -20
+
+      # Push generated manifests to the deployments repo
+      - name: Checkout deployments repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.DEPLOYMENTS_REPO }}
+          path: deployments
+          token: ${{ secrets.DEPLOYMENTS_REPO_TOKEN }}
+
+      - name: Copy manifests to deployments repo
+        run: |
+          APP_NAME=$(jq -r '.name' deskribe.json)
+          mkdir -p deployments/${APP_NAME}
+          cp -r output/${APP_NAME}/* deployments/${APP_NAME}/
+          echo "Copied manifests for ${APP_NAME} to deployments repo"
+
+      - name: Commit and push to deployments repo
+        working-directory: deployments
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "chore: update $(jq -r '.name' ../deskribe.json) manifests for ${{ env.TARGET_ENV }} [skip ci]"
+            git push
+          fi
+
+  # ================================================================
+  # Job 4: Post plan as PR comment (for PRs only)
+  # ================================================================
+  plan-comment:
+    needs: [build, validate]
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install Deskribe CLI
+        run: dotnet tool install --global deskribe-cli || true
+
+      - name: Generate plan
+        id: plan
+        run: |
+          PLAN_OUTPUT=$(deskribe plan \
+            -f deskribe.json \
+            --env dev \
+            --platform ${{ env.PLATFORM_CONFIG_PATH }} \
+            --image api=${{ needs.build.outputs.image-tag }} 2>&1 || true)
+          echo "plan<<EOF" >> $GITHUB_OUTPUT
+          echo "$PLAN_OUTPUT" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Post plan as PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const plan = `${{ steps.plan.outputs.plan }}`;
+            const body = `## Deskribe Plan (\`dev\`)
+
+            \`\`\`
+            ${plan}
+            \`\`\`
+
+            *Generated by Deskribe. Run \`deskribe plan --env dev\` locally to reproduce.*`;
+
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: body
+            });

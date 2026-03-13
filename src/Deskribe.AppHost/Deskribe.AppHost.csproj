@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\Deskribe.Aspire\Deskribe.Aspire.csproj" IsAspireProjectResource="false" />
     <ProjectReference Include="..\Deskribe.Web\Deskribe.Web.csproj" />
+    <ProjectReference Include="..\..\examples\payments-api\src\PaymentsApi.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

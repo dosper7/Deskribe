@@ -9,6 +9,11 @@
     <h1>Applications</h1>
 </div>
 
+@if (errorMessage != null)
+{
+    <div class="toast error" style="margin-bottom: 16px;">@errorMessage</div>
+}
+
 <div class="card">
     <div class="card-body" style="padding: 0;">
         <table class="resource-table">
@@ -26,7 +31,7 @@
                 {
                     <tr>
                         <td>
-                            <a href="plan/@app.Name/dev" style="font-weight: 600;">@app.Name</a>
+                            <a href="plan/@app.Name/@app.Environments.FirstOrDefault()" style="font-weight: 600;">@app.Name</a>
                         </td>
                         <td>
                             @if (manifests.TryGetValue(app.Name, out var manifest))
@@ -43,15 +48,22 @@
                             <div style="display: flex; gap: 6px;">
                                 @foreach (var env in app.Environments)
                                 {
-                                    <span class="env-pill @env">@env</span>
+                                    <a href="plan/@app.Name/@env" style="text-decoration: none;">
+                                        <span class="env-pill @env">@env</span>
+                                    </a>
                                 }
                             </div>
                         </td>
                         <td>
-                            <span class="badge badge-healthy"><span class="status-dot healthy"></span> Synced</span>
+                            @{
+                                var status = UiService.StateStore.GetAggregateStatus(app.Name, app.Environments);
+                            }
+                            <span class="badge @GetStatusBadgeClass(status)">
+                                <span class="status-dot @GetStatusDotClass(status)"></span> @status
+                            </span>
                         </td>
                         <td>
-                            <a href="plan/@app.Name/dev" class="btn btn-outline" style="font-size: 12px;">View Plan</a>
+                            <a href="plan/@app.Name/@app.Environments.FirstOrDefault()" class="btn btn-outline" style="font-size: 12px;">View Plan</a>
                         </td>
                     </tr>
                 }
@@ -63,13 +75,39 @@
 @code {
     private IReadOnlyList<DeskribeUiService.AppInfo> apps = [];
     private Dictionary<string, Deskribe.Sdk.Models.DeskribeManifest> manifests = new();
+    private string? errorMessage;
 
     protected override async Task OnInitializedAsync()
     {
         apps = UiService.GetApplications();
         foreach (var app in apps)
         {
-            try { manifests[app.Name] = await UiService.GetManifestAsync(app.Name); } catch { }
+            try
+            {
+                manifests[app.Name] = await UiService.GetManifestAsync(app.Name);
+            }
+            catch (Exception ex)
+            {
+                errorMessage = $"Failed to load manifest for {app.Name}: {ex.Message}";
+            }
         }
     }
+
+    private static string GetStatusBadgeClass(AppStatus status) => status switch
+    {
+        AppStatus.Applied => "badge-healthy",
+        AppStatus.Planned => "badge-info",
+        AppStatus.Error => "badge-error",
+        AppStatus.Destroyed => "badge-warning",
+        _ => "badge-muted"
+    };
+
+    private static string GetStatusDotClass(AppStatus status) => status switch
+    {
+        AppStatus.Applied => "healthy",
+        AppStatus.Planned => "info",
+        AppStatus.Error => "error",
+        AppStatus.Destroyed => "warning",
+        _ => "muted"
+    };
 }

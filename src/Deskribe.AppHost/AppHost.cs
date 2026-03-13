@@ -17,6 +17,11 @@ var manifestPath = builder.Configuration["Deskribe:ManifestPath"]
 
 var resources = builder.AddDeskribeManifest(manifestPath);
 
+// Payments API — the sample application using Postgres, Redis, and Kafka
+var paymentsApi = builder.AddProject<Projects.PaymentsApi>("payments-api")
+    .WithDeskribeResources(resources)
+    .WithExternalHttpEndpoints();
+
 // Deskribe Web UI — dashboard showing what's running
 var web = builder.AddProject<Projects.Deskribe_Web>("deskribe-web")
     .WithDeskribeResources(resources)

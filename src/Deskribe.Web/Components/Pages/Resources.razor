@@ -9,6 +9,11 @@
     <h1>Resources</h1>
 </div>
 
+@if (errorMessage != null)
+{
+    <div class="toast error" style="margin-bottom: 16px;">@errorMessage</div>
+}
+
 <div class="stats-grid">
     <div class="stat-card">
         <span class="stat-label">Postgres</span>
@@ -43,7 +48,7 @@
                 </tr>
             </thead>
             <tbody>
-                @foreach (var (appName, manifest) in manifests)
+                @foreach (var (appName, app, manifest) in appManifests)
                 {
                     @foreach (var r in manifest.Resources)
                     {
@@ -52,7 +57,14 @@
                             <td><span class="badge badge-resource">@r.Type</span></td>
                             <td>@(r.Size ?? "default")</td>
                             <td>@(platformConfig?.Provisioners.GetValueOrDefault(r.Type) ?? "—")</td>
-                            <td><span class="badge badge-healthy"><span class="status-dot healthy"></span> Ready</span></td>
+                            <td>
+                                @{
+                                    var status = UiService.StateStore.GetAggregateStatus(appName, app.Environments);
+                                }
+                                <span class="badge @GetStatusBadgeClass(status)">
+                                    <span class="status-dot @GetStatusDotClass(status)"></span> @status
+                                </span>
+                            </td>
                         </tr>
                     }
                 }
@@ -62,9 +74,10 @@
 </div>
 
 @code {
-    private Dictionary<string, Deskribe.Sdk.Models.DeskribeManifest> manifests = new();
+    private List<(string Name, DeskribeUiService.AppInfo App, Deskribe.Sdk.Models.DeskribeManifest Manifest)> appManifests = new();
     private Deskribe.Sdk.Models.PlatformConfig? platformConfig;
     private int postgresCount, redisCount, kafkaCount;
+    private string? errorMessage;
 
     protected override async Task OnInitializedAsync()
     {
@@ -73,13 +86,17 @@
         {
             try
             {
-                manifests[app.Name] = await UiService.GetManifestAsync(app.Name);
+                var manifest = await UiService.GetManifestAsync(app.Name);
+                appManifests.Add((app.Name, app, manifest));
                 platformConfig ??= await UiService.GetPlatformConfigAsync(app.Name);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                errorMessage = $"Failed to load manifest for {app.Name}: {ex.Message}";
+            }
         }
 
-        foreach (var (_, m) in manifests)
+        foreach (var (_, _, m) in appManifests)
         {
             foreach (var r in m.Resources)
             {
@@ -89,4 +106,22 @@
             }
         }
     }
+
+    private static string GetStatusBadgeClass(AppStatus status) => status switch
+    {
+        AppStatus.Applied => "badge-healthy",
+        AppStatus.Planned => "badge-info",
+        AppStatus.Error => "badge-error",
+        AppStatus.Destroyed => "badge-warning",
+        _ => "badge-muted"
+    };
+
+    private static string GetStatusDotClass(AppStatus status) => status switch
+    {
+        AppStatus.Applied => "healthy",
+        AppStatus.Planned => "info",
+        AppStatus.Error => "error",
+        AppStatus.Destroyed => "warning",
+        _ => "muted"
+    };
 }

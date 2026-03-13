@@ -221,35 +221,61 @@ public class DeskribeEngine
         string environment,
         string outputDir,
         Dictionary<string, string>? images = null,
+        string? outputFormat = null,
         CancellationToken ct = default)
     {
-        _logger.LogInformation("Generating artifacts for {Env} to {OutputDir}", environment, outputDir);
+        _logger.LogInformation("Generating artifacts for {Env} to {OutputDir} (format: {Format})", environment, outputDir, outputFormat ?? "all");
 
         var plan = await PlanAsync(manifestPath, platformPath, environment, images, ct);
         var allFiles = new List<GeneratedFile>();
+        var format = outputFormat ?? "all";
 
-        // Group resource plans by provisioner
-        var provisionerGroups = plan.ResourcePlans
-            .GroupBy(rp => plan.Platform.Provisioners.GetValueOrDefault(rp.ResourceType, "pulumi"));
-
-        foreach (var group in provisionerGroups)
+        // Generate provisioner artifacts (terraform/pulumi) unless k8s-only
+        if (format is "all" or "terraform-only")
         {
-            var provisioner = _pluginRegistry.GetProvisioner(group.Key);
-            if (provisioner is null)
-            {
-                _logger.LogWarning("No provisioner '{Name}' for artifact generation", group.Key);
-                continue;
-            }
+            var provisionerGroups = plan.ResourcePlans
+                .GroupBy(rp => plan.Platform.Provisioners.GetValueOrDefault(rp.ResourceType, "pulumi"));
 
-            var result = await provisioner.GenerateArtifactsAsync(plan, outputDir, ct);
-            if (!result.Success)
+            foreach (var group in provisionerGroups)
             {
-                _logger.LogWarning("Artifact generation failed for provisioner '{Name}': {Errors}",
-                    group.Key, string.Join(", ", result.Errors));
-                continue;
-            }
+                var provisioner = _pluginRegistry.GetProvisioner(group.Key);
+                if (provisioner is null)
+                {
+                    _logger.LogWarning("No provisioner '{Name}' for artifact generation", group.Key);
+                    continue;
+                }
 
-            allFiles.AddRange(result.Files);
+                var result = await provisioner.GenerateArtifactsAsync(plan, outputDir, ct);
+                if (!result.Success)
+                {
+                    _logger.LogWarning("Artifact generation failed for provisioner '{Name}': {Errors}",
+                        group.Key, string.Join(", ", result.Errors));
+                    continue;
+                }
+
+                allFiles.AddRange(result.Files);
+            }
+        }
+
+        // Generate K8s YAML + Kustomize structure unless terraform-only
+        if (format is "all" or "k8s-only")
+        {
+            if (plan.Workload is not null)
+            {
+                var runtimeName = plan.Platform.Runtime.Name;
+                var runtime = _pluginRegistry.GetRuntimePlugin(runtimeName);
+
+                if (runtime is not null)
+                {
+                    var artifact = await runtime.RenderAsync(plan.Workload, ct);
+                    var k8sFiles = GenerateKustomizeStructure(plan, artifact, outputDir);
+                    allFiles.AddRange(k8sFiles);
+                }
+                else
+                {
+                    _logger.LogWarning("No runtime plugin '{Runtime}' for K8s artifact generation", runtimeName);
+                }
+            }
         }
 
         // Write files to disk
@@ -264,6 +290,107 @@ public class DeskribeEngine
         }
 
         return allFiles;
+    }
+
+    private static List<GeneratedFile> GenerateKustomizeStructure(DeskribePlan plan, RuntimeArtifact artifact, string outputDir)
+    {
+        var files = new List<GeneratedFile>();
+        var appDir = Path.Combine(outputDir, plan.AppName);
+        var baseDir = Path.Combine(appDir, "base");
+        var overlayDir = Path.Combine(appDir, "overlays", plan.Environment);
+
+        // Split the YAML into deployment and secrets
+        var yamlDocuments = artifact.Yaml.Split("---\n", StringSplitOptions.RemoveEmptyEntries);
+        var deploymentYaml = new List<string>();
+        var secretYaml = new List<string>();
+
+        foreach (var doc in yamlDocuments)
+        {
+            var trimmed = doc.Trim();
+            if (trimmed.Contains("kind: Secret") || trimmed.Contains("kind: ExternalSecret"))
+                secretYaml.Add(trimmed);
+            else
+                deploymentYaml.Add(trimmed);
+        }
+
+        // base/deployment.yaml — Namespace + Deployment + Service
+        files.Add(new GeneratedFile
+        {
+            Path = Path.Combine(baseDir, "deployment.yaml"),
+            Content = string.Join("\n---\n", deploymentYaml) + "\n",
+            Format = "yaml"
+        });
+
+        // base/secrets.yaml — Secret/ExternalSecret
+        if (secretYaml.Count > 0)
+        {
+            files.Add(new GeneratedFile
+            {
+                Path = Path.Combine(baseDir, "secrets.yaml"),
+                Content = string.Join("\n---\n", secretYaml) + "\n",
+                Format = "yaml"
+            });
+        }
+
+        // base/kustomization.yaml
+        var baseResources = new List<string> { "- deployment.yaml" };
+        if (secretYaml.Count > 0) baseResources.Add("- secrets.yaml");
+
+        files.Add(new GeneratedFile
+        {
+            Path = Path.Combine(baseDir, "kustomization.yaml"),
+            Content = $"""
+                apiVersion: kustomize.config.k8s.io/v1beta1
+                kind: Kustomization
+
+                resources:
+                {string.Join("\n", baseResources)}
+                """.Replace("                ", "") + "\n",
+            Format = "yaml"
+        });
+
+        // overlays/{env}/kustomization.yaml
+        var workload = plan.Workload!;
+        files.Add(new GeneratedFile
+        {
+            Path = Path.Combine(overlayDir, "kustomization.yaml"),
+            Content = $"""
+                apiVersion: kustomize.config.k8s.io/v1beta1
+                kind: Kustomization
+
+                resources:
+                - ../../base
+
+                namespace: {workload.Namespace}
+
+                patches:
+                - target:
+                    kind: Deployment
+                    name: {plan.AppName}
+                  patch: |
+                    - op: replace
+                      path: /spec/replicas
+                      value: {workload.Replicas}
+                    - op: replace
+                      path: /spec/template/spec/containers/0/image
+                      value: {workload.Image ?? "nginx:latest"}
+                    - op: replace
+                      path: /spec/template/spec/containers/0/resources/requests/cpu
+                      value: {workload.Cpu}
+                    - op: replace
+                      path: /spec/template/spec/containers/0/resources/requests/memory
+                      value: {workload.Memory}
+                    - op: replace
+                      path: /spec/template/spec/containers/0/resources/limits/cpu
+                      value: {workload.Cpu}
+                    - op: replace
+                      path: /spec/template/spec/containers/0/resources/limits/memory
+                      value: {workload.Memory}
+                """.Replace("                ", "") + "\n",
+            Format = "yaml"
+        });
+
+        return files;
     }
 
     public async Task DestroyAsync(

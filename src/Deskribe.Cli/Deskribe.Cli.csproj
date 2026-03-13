@@ -22,6 +22,11 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>deskribe</ToolCommandName>
+    <PackageId>deskribe-cli</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Deskribe CLI - Intent-as-Code infrastructure management</Description>
   </PropertyGroup>
 
 </Project>

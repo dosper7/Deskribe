@@ -24,6 +24,7 @@ builder.Services.AddDeskribe(
     typeof(TerraformPlugin).Assembly,
     typeof(KubernetesPlugin).Assembly);
 
+builder.Services.AddSingleton<AppStateStore>();
 builder.Services.AddSingleton<DeskribeUiService>();
 
 var app = builder.Build();

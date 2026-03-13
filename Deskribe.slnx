@@ -22,8 +22,7 @@
     <Project Path="src/Plugins/Runtimes/Kubernetes/Deskribe.Plugins.Runtime.Kubernetes.csproj" />
   </Folder>
   <Folder Name="/examples/">
-    <Project Path="examples/weather-api/src/WeatherApi/WeatherApi.csproj" />
-    <Project Path="examples/weather-api/infra/Deskribe.Infra.csproj" />
+    <Project Path="examples/payments-api/src/PaymentsApi.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Deskribe.Core.Tests/Deskribe.Core.Tests.csproj" />

@@ -7,8 +7,18 @@
 
 <div class="page-header">
     <h1>Dashboard</h1>
-    <span class="text-muted">Overview of your infrastructure</span>
+    <div style="display: flex; gap: 8px; align-items: center;">
+        <span class="text-muted">Overview of your infrastructure</span>
+        <button class="btn btn-outline" style="font-size: 12px;" @onclick="Refresh">
+            @if (isRefreshing) { <span class="spinner"></span> } Refresh
+        </button>
+    </div>
 </div>
+
+@if (errorMessage != null)
+{
+    <div class="toast error" style="margin-bottom: 16px;">@errorMessage</div>
+}
 
 <div class="stats-grid">
     <div class="stat-card">
@@ -19,17 +29,20 @@
     <div class="stat-card">
         <span class="stat-label">Environments</span>
         <span class="stat-value">@totalEnvs</span>
-        <span class="stat-detail">dev, prod</span>
+        <span class="stat-detail">@string.Join(", ", allEnvs)</span>
     </div>
     <div class="stat-card">
         <span class="stat-label">Resources</span>
         <span class="stat-value">@totalResources</span>
-        <span class="stat-detail">Postgres, Redis, Kafka</span>
+        <span class="stat-detail">@string.Join(", ", resourceTypes)</span>
     </div>
     <div class="stat-card">
         <span class="stat-label">Status</span>
-        <span class="stat-value text-green">Healthy</span>
-        <span class="stat-detail">All systems operational</span>
+        @{
+            var overallStatus = GetOverallStatus();
+        }
+        <span class="stat-value @GetStatusColor(overallStatus)">@overallStatus</span>
+        <span class="stat-detail">@GetStatusDetail(overallStatus)</span>
     </div>
 </div>
 
@@ -41,29 +54,34 @@
         <div class="app-grid">
             @foreach (var app in apps)
             {
-                <a href="plan/@app.Name/dev" style="text-decoration: none;">
-                    <div class="app-card">
-                        <div class="app-card-header">
-                            <span class="app-card-name">@app.Name</span>
-                            <span class="badge badge-healthy"><span class="status-dot healthy"></span> Synced</span>
-                        </div>
-                        <div class="app-card-resources">
-                            @if (manifests.TryGetValue(app.Name, out var manifest))
-                            {
-                                @foreach (var r in manifest.Resources)
-                                {
-                                    <span class="badge badge-resource">@r.Type</span>
-                                }
-                            }
-                        </div>
-                        <div class="app-card-envs">
-                            @foreach (var env in app.Environments)
-                            {
-                                <span class="env-pill @env">@env</span>
-                            }
-                        </div>
+                <div class="app-card">
+                    <div class="app-card-header">
+                        <span class="app-card-name">@app.Name</span>
+                        @{
+                            var status = UiService.StateStore.GetAggregateStatus(app.Name, app.Environments);
+                        }
+                        <span class="badge @GetStatusBadgeClass(status)">
+                            <span class="status-dot @GetStatusDotClass(status)"></span> @status
+                        </span>
                     </div>
-                </a>
+                    <div class="app-card-resources">
+                        @if (manifests.TryGetValue(app.Name, out var manifest))
+                        {
+                            @foreach (var r in manifest.Resources)
+                            {
+                                <span class="badge badge-resource">@r.Type</span>
+                            }
+                        }
+                    </div>
+                    <div class="app-card-envs">
+                        @foreach (var env in app.Environments)
+                        {
+                            <a href="plan/@app.Name/@env" style="text-decoration: none;">
+                                <span class="env-pill @env">@env</span>
+                            </a>
+                        }
+                    </div>
+                </div>
             }
         </div>
     </div>
@@ -74,21 +92,105 @@
     private Dictionary<string, Deskribe.Sdk.Models.DeskribeManifest> manifests = new();
     private int totalEnvs;
     private int totalResources;
+    private HashSet<string> allEnvs = new();
+    private HashSet<string> resourceTypes = new();
+    private string? errorMessage;
+    private bool isRefreshing;
 
     protected override async Task OnInitializedAsync()
     {
+        await LoadData();
+    }
+
+    private async Task Refresh()
+    {
+        isRefreshing = true;
+        errorMessage = null;
+        try
+        {
+            UiService.RefreshApps();
+            await LoadData();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = $"Failed to refresh: {ex.Message}";
+        }
+        finally
+        {
+            isRefreshing = false;
+        }
+    }
+
+    private async Task LoadData()
+    {
         apps = UiService.GetApplications();
-        totalEnvs = apps.Sum(a => a.Environments.Length);
+        manifests.Clear();
+        allEnvs.Clear();
+        resourceTypes.Clear();
+        totalResources = 0;
 
         foreach (var app in apps)
         {
+            foreach (var env in app.Environments)
+                allEnvs.Add(env);
+
             try
             {
                 var manifest = await UiService.GetManifestAsync(app.Name);
                 manifests[app.Name] = manifest;
                 totalResources += manifest.Resources.Count;
+                foreach (var r in manifest.Resources)
+                    resourceTypes.Add(r.Type.Split('.')[0]);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                errorMessage = $"Failed to load manifest for {app.Name}: {ex.Message}";
+            }
         }
+
+        totalEnvs = allEnvs.Count;
     }
+
+    private string GetOverallStatus()
+    {
+        if (apps.Count == 0) return "No Apps";
+        var hasError = apps.Any(a => UiService.StateStore.GetAggregateStatus(a.Name, a.Environments) == AppStatus.Error);
+        if (hasError) return "Degraded";
+        var hasApplied = apps.Any(a => UiService.StateStore.GetAggregateStatus(a.Name, a.Environments) == AppStatus.Applied);
+        if (hasApplied) return "Healthy";
+        return "Idle";
+    }
+
+    private static string GetStatusColor(string status) => status switch
+    {
+        "Healthy" => "text-green",
+        "Degraded" => "text-red",
+        _ => "text-muted"
+    };
+
+    private static string GetStatusDetail(string status) => status switch
+    {
+        "Healthy" => "Active deployments",
+        "Degraded" => "Some errors detected",
+        "No Apps" => "No applications discovered",
+        _ => "Run Plan to see status"
+    };
+
+    private static string GetStatusBadgeClass(AppStatus status) => status switch
+    {
+        AppStatus.Applied => "badge-healthy",
+        AppStatus.Planned => "badge-info",
+        AppStatus.Error => "badge-error",
+        AppStatus.Destroyed => "badge-warning",
+        _ => "badge-muted"
+    };
+
+    private static string GetStatusDotClass(AppStatus status) => status switch
+    {
+        AppStatus.Applied => "healthy",
+        AppStatus.Planned => "info",
+        AppStatus.Error => "error",
+        AppStatus.Destroyed => "warning",
+        _ => "muted"
+    };
 }

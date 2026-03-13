@@ -631,3 +631,74 @@ input[type="text"]:focus, select:focus {
 .gap-2 { gap: 8px; }
 .flex { display: flex; }
 .items-center { align-items: center; }
+
+/* Modal */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal-dialog {
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    width: 440px;
+    max-width: 90vw;
+    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.4);
+}
+
+.modal-header {
+    padding: 20px 24px 0;
+}
+
+.modal-header h3 {
+    font-size: 18px;
+    font-weight: 700;
+    margin: 0;
+}
+
+.modal-body {
+    padding: 16px 24px;
+    color: var(--text-secondary);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.modal-footer {
+    padding: 0 24px 20px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}
+
+/* Muted badge */
+.badge-muted {
+    background: rgba(139, 148, 158, 0.15);
+    color: var(--text-muted);
+}
+
+/* Status dot extras */
+.status-dot.info { background: var(--accent-blue); }
+.status-dot.muted { background: var(--text-muted); }
+
+/* Active environment pill */
+.env-pill.active {
+    background: var(--accent-blue);
+    color: white;
+    border-color: var(--accent-blue);
+}
+
+.env-pill.active.prod {
+    background: var(--accent-orange);
+    border-color: var(--accent-orange);
+    color: white;
+}
+

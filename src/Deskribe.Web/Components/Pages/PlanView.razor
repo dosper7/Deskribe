@@ -3,29 +3,67 @@
 @using Deskribe.Sdk.Models
 @using System.Text.Json
 @inject DeskribeUiService UiService
+@inject NavigationManager Nav
 @rendermode InteractiveServer
 
 <PageTitle>Plan: @AppName (@Environment) - Deskribe</PageTitle>
+
+<Deskribe.Web.Components.Shared.ConfirmDialog
+    IsVisible="@showApplyConfirm"
+    Title="Confirm Apply"
+    Message='@($"This will provision infrastructure and deploy {AppName} to {Environment}. Continue?")'
+    ConfirmText="Apply"
+    ButtonClass="btn-success"
+    IsProcessing="@isApplying"
+    OnConfirm="DoApply"
+    OnCancel="() => showApplyConfirm = false" />
+
+<Deskribe.Web.Components.Shared.ConfirmDialog
+    IsVisible="@showDestroyConfirm"
+    Title="Confirm Destroy"
+    Message='@($"This will DESTROY all resources for {AppName} in {Environment}. This cannot be undone. Continue?")'
+    ConfirmText="Destroy"
+    ButtonClass="btn-danger"
+    IsProcessing="@isDestroying"
+    OnConfirm="DoDestroy"
+    OnCancel="() => showDestroyConfirm = false" />
 
 <div class="page-header">
     <div>
         <h1>@AppName</h1>
         <div class="flex items-center gap-2 mt-2">
-            <span class="env-pill @Environment">@Environment</span>
-            @if (plan != null)
+            @if (appInfo != null)
             {
-                <span class="badge badge-healthy"><span class="status-dot healthy"></span> Plan Ready</span>
+                @foreach (var env in appInfo.Environments)
+                {
+                    <a href="plan/@AppName/@env"
+                       class="env-pill @env @(env == Environment ? "active" : "")"
+                       style="text-decoration: none; cursor: pointer;">
+                        @env
+                    </a>
+                }
             }
+            @{
+                var state = UiService.StateStore.GetState(AppName, Environment);
+            }
+            <span class="badge @GetStatusBadgeClass(state.Status)">
+                <span class="status-dot @GetStatusDotClass(state.Status)"></span> @state.Status
+            </span>
         </div>
     </div>
-    <div style="display: flex; gap: 8px;">
+    <div style="display: flex; gap: 8px; align-items: flex-end;">
+        <div style="display: flex; flex-direction: column; gap: 4px;">
+            <label style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 600;">Container Image</label>
+            <input type="text" @bind="containerImage" placeholder="nginx:latest"
+                   style="background: var(--card-bg); border: 1px solid var(--border-color); color: var(--text-primary); padding: 6px 10px; border-radius: 6px; font-size: 13px; font-family: monospace; width: 280px;" />
+        </div>
         <button class="btn btn-primary" @onclick="GeneratePlan" disabled="@isLoading">
             @if (isLoading) { <span class="spinner"></span> } Plan
         </button>
-        <button class="btn btn-success" @onclick="ApplyPlan" disabled="@(plan == null || isApplying)">
+        <button class="btn btn-success" @onclick="() => showApplyConfirm = true" disabled="@(plan == null || isApplying)">
             @if (isApplying) { <span class="spinner"></span> } Apply
         </button>
-        <button class="btn btn-danger" @onclick="DestroyEnv" disabled="@isDestroying">
+        <button class="btn btn-danger" @onclick="() => showDestroyConfirm = true" disabled="@isDestroying">
             @if (isDestroying) { <span class="spinner"></span> } Destroy
         </button>
     </div>
@@ -188,6 +226,7 @@ else if (plan != null)
     [Parameter] public string AppName { get; set; } = "";
     [Parameter] public string Environment { get; set; } = "";
 
+    private DeskribeUiService.AppInfo? appInfo;
     private DeskribePlan? plan;
     private string? yamlPreview;
     private string? errorMessage;
@@ -196,6 +235,14 @@ else if (plan != null)
     private bool isApplying;
     private bool isDestroying;
     private string activeTab = "plan";
+    private string containerImage = "nginx:latest";
+    private bool showApplyConfirm;
+    private bool showDestroyConfirm;
+
+    protected override void OnInitialized()
+    {
+        appInfo = UiService.GetApplications().FirstOrDefault(a => a.Name == AppName);
+    }
 
     private async Task GeneratePlan()
     {
@@ -205,7 +252,7 @@ else if (plan != null)
 
         try
         {
-            plan = await UiService.PlanAsync(AppName, Environment, "nginx:latest");
+            plan = await UiService.PlanAsync(AppName, Environment, containerImage);
 
             // Generate YAML preview
             var k8sPlugin = new Deskribe.Plugins.Runtime.Kubernetes.KubernetesRuntimePlugin();
@@ -214,6 +261,8 @@ else if (plan != null)
                 var artifact = await k8sPlugin.RenderAsync(plan.Workload, CancellationToken.None);
                 yamlPreview = artifact.Yaml;
             }
+
+            successMessage = "Plan generated successfully";
         }
         catch (Exception ex)
         {
@@ -225,7 +274,7 @@ else if (plan != null)
         }
     }
 
-    private async Task ApplyPlan()
+    private async Task DoApply()
     {
         if (plan == null) return;
         isApplying = true;
@@ -235,10 +284,12 @@ else if (plan != null)
         {
             await UiService.ApplyAsync(plan);
             successMessage = $"Successfully applied {AppName} to {Environment}!";
+            showApplyConfirm = false;
         }
         catch (Exception ex)
         {
             errorMessage = ex.Message;
+            showApplyConfirm = false;
         }
         finally
         {
@@ -246,7 +297,7 @@ else if (plan != null)
         }
     }
 
-    private async Task DestroyEnv()
+    private async Task DoDestroy()
     {
         isDestroying = true;
         errorMessage = null;
@@ -256,16 +307,36 @@ else if (plan != null)
             await UiService.DestroyAsync(AppName, Environment);
             successMessage = $"Successfully destroyed {AppName} in {Environment}!";
             plan = null;
+            showDestroyConfirm = false;
         }
         catch (Exception ex)
         {
             errorMessage = ex.Message;
+            showDestroyConfirm = false;
         }
         finally
         {
             isDestroying = false;
         }
     }
+
+    private static string GetStatusBadgeClass(AppStatus status) => status switch
+    {
+        AppStatus.Applied => "badge-healthy",
+        AppStatus.Planned => "badge-info",
+        AppStatus.Error => "badge-error",
+        AppStatus.Destroyed => "badge-warning",
+        _ => "badge-muted"
+    };
+
+    private static string GetStatusDotClass(AppStatus status) => status switch
+    {
+        AppStatus.Applied => "healthy",
+        AppStatus.Planned => "info",
+        AppStatus.Error => "error",
+        AppStatus.Destroyed => "warning",
+        _ => "muted"
+    };
 
     private static string FormatValue(object? value)
     {
