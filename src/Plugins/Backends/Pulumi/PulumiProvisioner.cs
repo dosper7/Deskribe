@@ -45,7 +45,7 @@ public class PulumiProvisioner : IProvisioner
             await workspace.SetConfigAsync("environment",
                 new global::Pulumi.Automation.ConfigValue(plan.Environment), ct);
             await workspace.SetConfigAsync("region",
-                new global::Pulumi.Automation.ConfigValue(plan.Platform.Defaults.Region), ct);
+                new global::Pulumi.Automation.ConfigValue(plan.Platform.Defaults.Region ?? "westeurope"), ct);
 
             // Set resource-specific config
             foreach (var resourcePlan in plan.ResourcePlans)
@@ -99,6 +99,39 @@ public class PulumiProvisioner : IProvisioner
                 Errors = [$"Pulumi stack update failed: {ex.Message}"]
             };
         }
+    }
+
+    public Task<ArtifactResult> GenerateArtifactsAsync(DeskribePlan plan, string outputDir, CancellationToken ct)
+    {
+        // Pulumi uses Automation API, so artifact generation produces Pulumi config
+        var stackConfig = new Dictionary<string, object>
+        {
+            ["appName"] = plan.AppName,
+            ["environment"] = plan.Environment,
+            ["region"] = plan.Platform.Defaults.Region ?? "westeurope"
+        };
+
+        foreach (var rp in plan.ResourcePlans)
+        {
+            foreach (var (key, value) in rp.Configuration)
+                stackConfig[$"{rp.ResourceType}:{key}"] = value ?? "null";
+        }
+
+        var configJson = JsonSerializer.Serialize(stackConfig, new JsonSerializerOptions { WriteIndented = true });
+
+        return Task.FromResult(new ArtifactResult
+        {
+            Success = true,
+            Files =
+            [
+                new GeneratedFile
+                {
+                    Path = Path.Combine(outputDir, $"Pulumi.{plan.AppName}-{plan.Environment}.json"),
+                    Content = configJson,
+                    Format = "json"
+                }
+            ]
+        });
     }
 
     public async Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)

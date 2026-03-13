@@ -3,6 +3,7 @@ using Deskribe.Cli.Commands;
 using Deskribe.Core;
 using Deskribe.Core.Engine;
 using Deskribe.Plugins.Backend.Pulumi;
+using Deskribe.Plugins.Backend.Terraform;
 using Deskribe.Plugins.Resources.Kafka;
 using Deskribe.Plugins.Resources.Postgres;
 using Deskribe.Plugins.Resources.Redis;
@@ -23,6 +24,7 @@ services.AddDeskribe(
     typeof(RedisPlugin).Assembly,
     typeof(KafkaPlugin).Assembly,
     typeof(PulumiPlugin).Assembly,
+    typeof(TerraformPlugin).Assembly,
     typeof(KubernetesPlugin).Assembly);
 
 var serviceProvider = services.BuildServiceProvider();
@@ -35,5 +37,6 @@ rootCommand.AddCommand(ValidateCommand.Create(engine));
 rootCommand.AddCommand(PlanCommand.Create(engine));
 rootCommand.AddCommand(ApplyCommand.Create(engine));
 rootCommand.AddCommand(DestroyCommand.Create(engine));
+rootCommand.AddCommand(GenerateCommand.Create(engine));
 
 return await rootCommand.InvokeAsync(args);

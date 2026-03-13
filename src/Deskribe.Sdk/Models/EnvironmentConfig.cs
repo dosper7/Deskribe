@@ -5,10 +5,10 @@ namespace Deskribe.Sdk.Models;
 public sealed record EnvironmentConfig
 {
     [JsonPropertyName("name")]
-    public required string Name { get; init; }
+    public string? Name { get; init; }
 
     [JsonPropertyName("defaults")]
-    public PlatformDefaults Defaults { get; init; } = new();
+    public PlatformDefaults? Defaults { get; init; }
 
     [JsonPropertyName("alertRouting")]
     public Dictionary<string, List<string>> AlertRouting { get; init; } = new();

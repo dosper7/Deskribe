@@ -1,0 +1,61 @@
+@page "/apps"
+@inject HttpClient Http
+
+<PageTitle>Applications - Deskribe</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Applications</MudText>
+
+@if (_loading)
+{
+    <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
+}
+else if (_apps is not null)
+{
+    <MudGrid>
+        @foreach (var app in _apps)
+        {
+            <MudItem xs="12" sm="6" md="4">
+                <MudCard Elevation="2">
+                    <MudCardContent>
+                        <MudText Typo="Typo.h6">@app.Name</MudText>
+                        <MudText Typo="Typo.body2" Color="Color.Secondary" Class="mt-1">@app.ManifestPath</MudText>
+                        <div class="mt-2">
+                            @foreach (var env in app.Environments)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="@(env == "prod" ? Color.Error : Color.Info)" Class="mr-1">@env</MudChip>
+                            }
+                        </div>
+                    </MudCardContent>
+                    <MudCardActions>
+                        <MudButton Href="@($"/apps/{app.Name}/dev")" Color="Color.Primary" Variant="Variant.Text" Size="Size.Small">Plan Dev</MudButton>
+                        <MudButton Href="@($"/apps/{app.Name}/prod")" Color="Color.Warning" Variant="Variant.Text" Size="Size.Small">Plan Prod</MudButton>
+                    </MudCardActions>
+                </MudCard>
+            </MudItem>
+        }
+    </MudGrid>
+}
+else
+{
+    <MudAlert Severity="Severity.Info">No applications found</MudAlert>
+}
+
+@code {
+    private AppInfo[]? _apps;
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _apps = await Http.GetFromJsonAsync<AppInfo[]>("/api/apps");
+        }
+        catch { }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    private record AppInfo(string Name, string ManifestPath, string PlatformPath, string[] Environments);
+}

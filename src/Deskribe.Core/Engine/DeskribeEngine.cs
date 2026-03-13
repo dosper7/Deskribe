@@ -199,7 +199,7 @@ public class DeskribeEngine
             var resolvedWorkload = plan.Workload with { EnvironmentVariables = resolvedEnv };
 
             // 3. Deploy to runtime
-            var runtimeName = plan.Platform.Defaults.Runtime;
+            var runtimeName = plan.Platform.Runtime.Name;
             var runtime = _pluginRegistry.GetRuntimePlugin(runtimeName);
 
             if (runtime is null)
@@ -215,6 +215,57 @@ public class DeskribeEngine
         }
     }
 
+    public async Task<List<GeneratedFile>> GenerateAsync(
+        string manifestPath,
+        string platformPath,
+        string environment,
+        string outputDir,
+        Dictionary<string, string>? images = null,
+        CancellationToken ct = default)
+    {
+        _logger.LogInformation("Generating artifacts for {Env} to {OutputDir}", environment, outputDir);
+
+        var plan = await PlanAsync(manifestPath, platformPath, environment, images, ct);
+        var allFiles = new List<GeneratedFile>();
+
+        // Group resource plans by provisioner
+        var provisionerGroups = plan.ResourcePlans
+            .GroupBy(rp => plan.Platform.Provisioners.GetValueOrDefault(rp.ResourceType, "pulumi"));
+
+        foreach (var group in provisionerGroups)
+        {
+            var provisioner = _pluginRegistry.GetProvisioner(group.Key);
+            if (provisioner is null)
+            {
+                _logger.LogWarning("No provisioner '{Name}' for artifact generation", group.Key);
+                continue;
+            }
+
+            var result = await provisioner.GenerateArtifactsAsync(plan, outputDir, ct);
+            if (!result.Success)
+            {
+                _logger.LogWarning("Artifact generation failed for provisioner '{Name}': {Errors}",
+                    group.Key, string.Join(", ", result.Errors));
+                continue;
+            }
+
+            allFiles.AddRange(result.Files);
+        }
+
+        // Write files to disk
+        Directory.CreateDirectory(outputDir);
+        foreach (var file in allFiles)
+        {
+            var dir = Path.GetDirectoryName(file.Path);
+            if (dir is not null)
+                Directory.CreateDirectory(dir);
+            await File.WriteAllTextAsync(file.Path, file.Content, ct);
+            _logger.LogInformation("Generated: {Path}", file.Path);
+        }
+
+        return allFiles;
+    }
+
     public async Task DestroyAsync(
         string manifestPath,
         string platformPath,
@@ -227,11 +278,12 @@ public class DeskribeEngine
         var platform = await _configLoader.LoadPlatformConfigAsync(platformPath, ct);
 
         // Destroy runtime resources
-        var runtimeName = platform.Defaults.Runtime;
+        var runtimeName = platform.Runtime.Name;
         var runtime = _pluginRegistry.GetRuntimePlugin(runtimeName);
         if (runtime is not null)
         {
-            var ns = platform.Defaults.NamespacePattern
+            var nsPattern = platform.Defaults.NamespacePattern ?? "{app}-{env}";
+            var ns = nsPattern
                 .Replace("{app}", manifest.Name)
                 .Replace("{env}", environment);
             await runtime.DestroyAsync(ns, ct);

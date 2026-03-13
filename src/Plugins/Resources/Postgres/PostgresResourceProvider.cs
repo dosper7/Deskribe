@@ -44,7 +44,7 @@ public class PostgresResourceProvider : IResourceProvider
     {
         var size = resource.Size ?? "s";
         var version = resource.Properties.TryGetValue("version", out var v) ? v.GetString() ?? "16" : "16";
-        var ha = resource.Properties.TryGetValue("ha", out var h) ? h.GetBoolean() : ctx.EnvironmentConfig.Defaults.Ha ?? false;
+        var ha = resource.Properties.TryGetValue("ha", out var h) ? h.GetBoolean() : ctx.EnvironmentConfig.Defaults?.Ha ?? false;
 
         return Task.FromResult(new ResourcePlanResult
         {

@@ -7,6 +7,7 @@
     <ProjectReference Include="..\Plugins\Resources\Redis\Deskribe.Plugins.Resources.Redis.csproj" />
     <ProjectReference Include="..\Plugins\Resources\Kafka\Deskribe.Plugins.Resources.Kafka.csproj" />
     <ProjectReference Include="..\Plugins\Backends\Pulumi\Deskribe.Plugins.Backend.Pulumi.csproj" />
+    <ProjectReference Include="..\Plugins\Backends\Terraform\Deskribe.Plugins.Backend.Terraform.csproj" />
     <ProjectReference Include="..\Plugins\Runtimes\Kubernetes\Deskribe.Plugins.Runtime.Kubernetes.csproj" />
   </ItemGroup>
 

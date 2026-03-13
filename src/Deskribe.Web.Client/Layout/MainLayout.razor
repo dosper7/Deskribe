@@ -1,0 +1,32 @@
+@inherits LayoutComponentBase
+
+<MudLayout>
+    <MudAppBar Elevation="1">
+        <MudIconButton Icon="@Icons.Material.Filled.Menu" Color="Color.Inherit" Edge="Edge.Start" OnClick="@ToggleDrawer" />
+        <MudText Typo="Typo.h6" Class="ml-3">Deskribe</MudText>
+        <MudSpacer />
+        <MudIconButton Icon="@Icons.Material.Filled.Code" Color="Color.Inherit" Href="https://github.com" Target="_blank" />
+    </MudAppBar>
+    <MudDrawer @bind-Open="_drawerOpen" Elevation="2" ClipMode="DrawerClipMode.Always">
+        <MudNavMenu>
+            <MudNavLink Href="/" Match="NavLinkMatch.All" Icon="@Icons.Material.Filled.Home">Home</MudNavLink>
+            <MudNavLink Href="/apps" Icon="@Icons.Material.Filled.Apps">Applications</MudNavLink>
+            <MudNavLink Href="/resources" Icon="@Icons.Material.Filled.Storage">Resources</MudNavLink>
+            <MudNavLink Href="/plugins" Icon="@Icons.Material.Filled.Extension">Plugins</MudNavLink>
+        </MudNavMenu>
+    </MudDrawer>
+    <MudMainContent>
+        <MudContainer MaxWidth="MaxWidth.Large" Class="mt-6 mb-8">
+            @Body
+        </MudContainer>
+    </MudMainContent>
+</MudLayout>
+
+@code {
+    private bool _drawerOpen = true;
+
+    private void ToggleDrawer()
+    {
+        _drawerOpen = !_drawerOpen;
+    }
+}

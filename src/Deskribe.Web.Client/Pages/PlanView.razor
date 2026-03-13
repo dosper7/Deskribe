@@ -1,0 +1,152 @@
+@page "/apps/{AppName}/{Environment}"
+@inject HttpClient Http
+
+<PageTitle>Plan: @AppName (@Environment) - Deskribe</PageTitle>
+
+<MudBreadcrumbs Items="_breadcrumbs" Class="mb-4" />
+
+<div class="d-flex align-center mb-4">
+    <MudText Typo="Typo.h4" Class="mr-4">@AppName</MudText>
+    <MudChip T="string" Color="@(Environment == "prod" ? Color.Error : Color.Info)">@Environment</MudChip>
+    <MudSpacer />
+    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="GeneratePlan" Disabled="_loading" Class="mr-2">
+        @if (_loading) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> } Plan
+    </MudButton>
+    <MudButton Variant="Variant.Filled" Color="Color.Success" OnClick="Validate" Disabled="_validating">
+        @if (_validating) { <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" /> } Validate
+    </MudButton>
+</div>
+
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4" ShowCloseIcon="true" CloseIconClicked="() => _error = null">@_error</MudAlert>
+}
+@if (_success is not null)
+{
+    <MudAlert Severity="Severity.Success" Class="mb-4" ShowCloseIcon="true" CloseIconClicked="() => _success = null">@_success</MudAlert>
+}
+
+@if (_plan is not null)
+{
+    <MudTabs Elevation="2" Rounded="true" ApplyEffectsToContainer="true" PanelClass="pa-4">
+        <MudTabPanel Text="Resources" Icon="@Icons.Material.Filled.Storage">
+            <MudSimpleTable Dense="true" Hover="true" Striped="true">
+                <thead>
+                    <tr>
+                        <th>Type</th>
+                        <th>Action</th>
+                        <th>Configuration</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var rp in _plan.ResourcePlans)
+                    {
+                        <tr>
+                            <td><MudChip T="string" Size="Size.Small" Color="Color.Primary">@rp.ResourceType</MudChip></td>
+                            <td><MudChip T="string" Size="Size.Small" Color="Color.Success">@rp.Action.ToUpperInvariant()</MudChip></td>
+                            <td>
+                                @foreach (var (key, value) in rp.Configuration)
+                                {
+                                    <MudText Typo="Typo.caption"><strong>@key:</strong> @value</MudText>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </MudSimpleTable>
+        </MudTabPanel>
+
+        @if (_plan.Workload is not null)
+        {
+            <MudTabPanel Text="Workload" Icon="@Icons.Material.Filled.Cloud">
+                <MudGrid>
+                    <MudItem xs="6" sm="3">
+                        <MudField Label="Namespace" Variant="Variant.Outlined">@_plan.Workload.Namespace</MudField>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudField Label="Replicas" Variant="Variant.Outlined">@_plan.Workload.Replicas</MudField>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudField Label="CPU" Variant="Variant.Outlined">@_plan.Workload.Cpu</MudField>
+                    </MudItem>
+                    <MudItem xs="6" sm="3">
+                        <MudField Label="Memory" Variant="Variant.Outlined">@_plan.Workload.Memory</MudField>
+                    </MudItem>
+                    <MudItem xs="12">
+                        <MudField Label="Image" Variant="Variant.Outlined">@(_plan.Workload.Image ?? "not set")</MudField>
+                    </MudItem>
+                </MudGrid>
+
+                @if (_plan.Workload.EnvironmentVariables.Count > 0)
+                {
+                    <MudText Typo="Typo.h6" Class="mt-4 mb-2">Environment Variables</MudText>
+                    <MudSimpleTable Dense="true" Hover="true">
+                        <thead><tr><th>Key</th><th>Value</th></tr></thead>
+                        <tbody>
+                            @foreach (var (key, value) in _plan.Workload.EnvironmentVariables)
+                            {
+                                <tr><td><code>@key</code></td><td><code>@value</code></td></tr>
+                            }
+                        </tbody>
+                    </MudSimpleTable>
+                }
+            </MudTabPanel>
+        }
+    </MudTabs>
+}
+else if (!_loading)
+{
+    <MudPaper Elevation="0" Class="pa-8 d-flex flex-column align-center justify-center" Style="min-height: 300px;">
+        <MudIcon Icon="@Icons.Material.Filled.PlayArrow" Size="Size.Large" Color="Color.Primary" />
+        <MudText Typo="Typo.h6" Class="mt-4" Color="Color.Secondary">Click Plan to generate an execution plan</MudText>
+    </MudPaper>
+}
+
+@code {
+    [Parameter] public string AppName { get; set; } = "";
+    [Parameter] public string Environment { get; set; } = "";
+
+    private DeskribePlan? _plan;
+    private string? _error;
+    private string? _success;
+    private bool _loading;
+    private bool _validating;
+
+    private List<BreadcrumbItem> _breadcrumbs => new()
+    {
+        new("Apps", "/apps", icon: Icons.Material.Filled.Apps),
+        new(AppName, $"/apps/{AppName}/{Environment}"),
+        new(Environment, null, disabled: true)
+    };
+
+    private async Task GeneratePlan()
+    {
+        _loading = true;
+        _error = null;
+        _success = null;
+        try
+        {
+            _plan = await Http.GetFromJsonAsync<DeskribePlan>($"/api/apps/{AppName}/plan/{Environment}");
+            _success = "Plan generated successfully";
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _loading = false; }
+    }
+
+    private async Task Validate()
+    {
+        _validating = true;
+        _error = null;
+        _success = null;
+        try
+        {
+            var result = await Http.GetFromJsonAsync<ValidationResult>($"/api/apps/{AppName}/validate/{Environment}");
+            if (result?.IsValid == true)
+                _success = "Validation passed";
+            else
+                _error = $"Validation failed: {string.Join(", ", result?.Errors ?? [])}";
+        }
+        catch (Exception ex) { _error = ex.Message; }
+        finally { _validating = false; }
+    }
+}

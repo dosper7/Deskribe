@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Aspire.Hosting;
 using Aspire.Hosting.ApplicationModel;
+using Deskribe.Aspire.Projections;
 using Deskribe.Sdk.Models;
 
 namespace Deskribe.Aspire;
@@ -15,9 +16,17 @@ public static class DeskribeAspireExtensions
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
+    private static readonly Dictionary<string, IAspireProjection> DefaultProjections = new()
+    {
+        ["postgres"] = new PostgresAspireProjection(),
+        ["redis"] = new RedisAspireProjection(),
+        ["kafka.messaging"] = new KafkaAspireProjection()
+    };
+
     public static DeskribeResourceMap AddDeskribeManifest(
         this IDistributedApplicationBuilder builder,
-        string manifestPath)
+        string manifestPath,
+        IEnumerable<IAspireProjection>? additionalProjections = null)
     {
         var fullPath = Path.GetFullPath(manifestPath);
         if (!File.Exists(fullPath))
@@ -27,28 +36,31 @@ public static class DeskribeAspireExtensions
         var manifest = JsonSerializer.Deserialize<DeskribeManifest>(json, JsonOptions)
             ?? throw new InvalidOperationException($"Failed to deserialize manifest from {fullPath}");
 
-        return builder.AddDeskribeManifest(manifest);
+        return builder.AddDeskribeManifest(manifest, additionalProjections);
     }
 
     public static DeskribeResourceMap AddDeskribeManifest(
         this IDistributedApplicationBuilder builder,
-        DeskribeManifest manifest)
+        DeskribeManifest manifest,
+        IEnumerable<IAspireProjection>? additionalProjections = null)
     {
         var map = new DeskribeResourceMap(manifest.Name);
 
+        // Build projection registry from defaults + any additional
+        var projections = new Dictionary<string, IAspireProjection>(DefaultProjections);
+        if (additionalProjections is not null)
+        {
+            foreach (var p in additionalProjections)
+                projections[p.ResourceType] = p;
+        }
+
         foreach (var resource in manifest.Resources)
         {
-            switch (resource.Type)
+            if (projections.TryGetValue(resource.Type, out var projection))
             {
-                case "postgres":
-                    AddPostgresResource(builder, manifest.Name, resource, map);
-                    break;
-                case "redis":
-                    AddRedisResource(builder, manifest.Name, resource, map);
-                    break;
-                case "kafka.messaging":
-                    AddKafkaResource(builder, manifest.Name, resource, map);
-                    break;
+                var result = projection.Project(builder, manifest.Name, resource);
+                if (result.Map is not null)
+                    map.Merge(result.Map);
             }
         }
 
@@ -70,71 +82,6 @@ public static class DeskribeAspireExtensions
         }
 
         return projectBuilder;
-    }
-
-    private static void AddPostgresResource(
-        IDistributedApplicationBuilder builder,
-        string appName,
-        ResourceDescriptor resource,
-        DeskribeResourceMap map)
-    {
-        var serverName = $"{appName}-postgres";
-        var dbName = $"{appName}-db";
-
-        var server = builder.AddPostgres(serverName);
-
-        var version = resource.Properties.TryGetValue("version", out var v) ? v.GetString() : null;
-        if (version is not null)
-            server = server.WithImageTag(version);
-
-        server = server.WithPgAdmin();
-        server = server.WithLifetime(ContainerLifetime.Persistent);
-
-        var db = server.AddDatabase(dbName);
-
-        map.AddConnectionStringResource(db);
-        map.AddWaitForResource(db);
-        map.RegisterResource("postgres", serverName, dbName);
-    }
-
-    private static void AddRedisResource(
-        IDistributedApplicationBuilder builder,
-        string appName,
-        ResourceDescriptor resource,
-        DeskribeResourceMap map)
-    {
-        var name = $"{appName}-redis";
-
-        var redis = builder.AddRedis(name);
-
-        var version = resource.Properties.TryGetValue("version", out var v) ? v.GetString() : null;
-        if (version is not null)
-            redis = redis.WithImageTag(version);
-
-        redis = redis.WithRedisInsight();
-        redis = redis.WithLifetime(ContainerLifetime.Persistent);
-
-        map.AddConnectionStringResource(redis);
-        map.AddWaitForResource(redis);
-        map.RegisterResource("redis", name);
-    }
-
-    private static void AddKafkaResource(
-        IDistributedApplicationBuilder builder,
-        string appName,
-        ResourceDescriptor resource,
-        DeskribeResourceMap map)
-    {
-        var name = $"{appName}-kafka";
-
-        var kafka = builder.AddKafka(name);
-
-        kafka = kafka.WithKafkaUI();
-        kafka = kafka.WithLifetime(ContainerLifetime.Persistent);
-
-        map.AddConnectionStringResource(kafka);
-        map.AddWaitForResource(kafka);
-        map.RegisterResource("kafka.messaging", name);
     }
 }
 
@@ -164,6 +111,13 @@ public class DeskribeResourceMap
     internal void RegisterResource(string type, string aspireResourceName, string? childResourceName = null)
     {
         Resources.Add(new DeskribeAspireResource(type, aspireResourceName, childResourceName));
+    }
+
+    public void Merge(DeskribeResourceMap other)
+    {
+        Resources.AddRange(other.Resources);
+        ConnectionStringResources.AddRange(other.ConnectionStringResources);
+        WaitForResources.AddRange(other.WaitForResources);
     }
 }
 

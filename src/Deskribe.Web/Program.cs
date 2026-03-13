@@ -1,7 +1,9 @@
+using Deskribe.Web.Api;
 using Deskribe.Web.Components;
 using Deskribe.Web.Services;
 using Deskribe.Core;
 using Deskribe.Plugins.Backend.Pulumi;
+using Deskribe.Plugins.Backend.Terraform;
 using Deskribe.Plugins.Resources.Kafka;
 using Deskribe.Plugins.Resources.Postgres;
 using Deskribe.Plugins.Resources.Redis;
@@ -19,6 +21,7 @@ builder.Services.AddDeskribe(
     typeof(RedisPlugin).Assembly,
     typeof(KafkaPlugin).Assembly,
     typeof(PulumiPlugin).Assembly,
+    typeof(TerraformPlugin).Assembly,
     typeof(KubernetesPlugin).Assembly);
 
 builder.Services.AddSingleton<DeskribeUiService>();
@@ -33,6 +36,8 @@ app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages:
 app.UseAntiforgery();
 
 app.MapDefaultEndpoints();
+
+app.MapDeskribeApi();
 
 app.MapStaticAssets();
 app.MapRazorComponents<App>()

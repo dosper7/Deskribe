@@ -1,0 +1,48 @@
+@page "/"
+
+<PageTitle>Deskribe</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Deskribe Dashboard</MudText>
+<MudText Typo="Typo.body1" Class="mb-6" Color="Color.Secondary">
+    Intent-as-Code platform for infrastructure and deployment.
+    Developers describe what they need, Deskribe translates it everywhere.
+</MudText>
+
+<MudGrid>
+    <MudItem xs="12" sm="4">
+        <MudCard Elevation="2">
+            <MudCardContent>
+                <MudIcon Icon="@Icons.Material.Filled.Apps" Size="Size.Large" Color="Color.Primary" />
+                <MudText Typo="Typo.h6" Class="mt-2">Applications</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">View and manage your applications</MudText>
+            </MudCardContent>
+            <MudCardActions>
+                <MudButton Href="/apps" Color="Color.Primary" Variant="Variant.Text">View Apps</MudButton>
+            </MudCardActions>
+        </MudCard>
+    </MudItem>
+    <MudItem xs="12" sm="4">
+        <MudCard Elevation="2">
+            <MudCardContent>
+                <MudIcon Icon="@Icons.Material.Filled.Storage" Size="Size.Large" Color="Color.Secondary" />
+                <MudText Typo="Typo.h6" Class="mt-2">Resources</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Postgres, Redis, Kafka and more</MudText>
+            </MudCardContent>
+            <MudCardActions>
+                <MudButton Href="/resources" Color="Color.Primary" Variant="Variant.Text">View Resources</MudButton>
+            </MudCardActions>
+        </MudCard>
+    </MudItem>
+    <MudItem xs="12" sm="4">
+        <MudCard Elevation="2">
+            <MudCardContent>
+                <MudIcon Icon="@Icons.Material.Filled.Extension" Size="Size.Large" Color="Color.Tertiary" />
+                <MudText Typo="Typo.h6" Class="mt-2">Plugins</MudText>
+                <MudText Typo="Typo.body2" Color="Color.Secondary">Registered plugins and schemas</MudText>
+            </MudCardContent>
+            <MudCardActions>
+                <MudButton Href="/plugins" Color="Color.Primary" Variant="Variant.Text">View Plugins</MudButton>
+            </MudCardActions>
+        </MudCard>
+    </MudItem>
+</MudGrid>

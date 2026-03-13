@@ -1,0 +1,65 @@
+@page "/plugins"
+@inject HttpClient Http
+
+<PageTitle>Plugins - Deskribe</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Plugins & Schemas</MudText>
+
+@if (_loading)
+{
+    <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
+}
+else if (_schemas is not null)
+{
+    <MudGrid>
+        @foreach (var schema in _schemas)
+        {
+            <MudItem xs="12" sm="6" md="4">
+                <MudCard Elevation="2">
+                    <MudCardHeader>
+                        <CardHeaderContent>
+                            <MudText Typo="Typo.h6">@schema.ResourceType</MudText>
+                            <MudText Typo="Typo.body2" Color="Color.Secondary">@schema.Description</MudText>
+                        </CardHeaderContent>
+                    </MudCardHeader>
+                    <MudCardContent>
+                        <MudText Typo="Typo.subtitle2" Class="mb-2">Properties</MudText>
+                        @foreach (var prop in schema.Properties)
+                        {
+                            <div class="d-flex align-center mb-1">
+                                <MudChip T="string" Size="Size.Small" Color="Color.Default" Class="mr-2">@prop.ValueType</MudChip>
+                                <MudText Typo="Typo.body2">
+                                    <strong>@prop.Name</strong>
+                                    @if (prop.Required) { <MudText Typo="Typo.caption" Color="Color.Error" Class="ml-1">required</MudText> }
+                                </MudText>
+                            </div>
+                        }
+
+                        <MudText Typo="Typo.subtitle2" Class="mt-3 mb-1">Outputs</MudText>
+                        <div class="d-flex flex-wrap gap-1">
+                            @foreach (var output in schema.ProvidedOutputs)
+                            {
+                                <MudChip T="string" Size="Size.Small" Color="Color.Success">@output</MudChip>
+                            }
+                        </div>
+                    </MudCardContent>
+                </MudCard>
+            </MudItem>
+        }
+    </MudGrid>
+}
+
+@code {
+    private ResourceSchema[]? _schemas;
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _schemas = await Http.GetFromJsonAsync<ResourceSchema[]>("/api/plugins");
+        }
+        catch { }
+        finally { _loading = false; }
+    }
+}

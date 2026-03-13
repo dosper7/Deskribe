@@ -1,0 +1,64 @@
+@page "/resources"
+@inject HttpClient Http
+
+<PageTitle>Resources - Deskribe</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">Resources</MudText>
+
+@if (_loading)
+{
+    <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
+}
+else if (_apps is not null)
+{
+    <MudSimpleTable Dense="true" Hover="true" Striped="true" Elevation="2">
+        <thead>
+            <tr>
+                <th>Application</th>
+                <th>Type</th>
+                <th>Size</th>
+            </tr>
+        </thead>
+        <tbody>
+            @foreach (var app in _apps)
+            {
+                @foreach (var r in app.Manifest.Resources)
+                {
+                    <tr>
+                        <td><strong>@app.Name</strong></td>
+                        <td><MudChip T="string" Size="Size.Small" Color="Color.Primary">@r.Type</MudChip></td>
+                        <td>@(r.Size ?? "default")</td>
+                    </tr>
+                }
+            }
+        </tbody>
+    </MudSimpleTable>
+}
+
+@code {
+    private List<AppWithManifest>? _apps;
+    private bool _loading = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var apps = await Http.GetFromJsonAsync<AppInfo[]>("/api/apps");
+            if (apps is not null)
+            {
+                _apps = new();
+                foreach (var app in apps)
+                {
+                    var manifest = await Http.GetFromJsonAsync<DeskribeManifest>($"/api/apps/{app.Name}/manifest");
+                    if (manifest is not null)
+                        _apps.Add(new(app.Name, manifest));
+                }
+            }
+        }
+        catch { }
+        finally { _loading = false; }
+    }
+
+    private record AppInfo(string Name, string ManifestPath, string PlatformPath, string[] Environments);
+    private record AppWithManifest(string Name, DeskribeManifest Manifest);
+}

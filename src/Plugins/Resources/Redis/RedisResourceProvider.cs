@@ -36,7 +36,7 @@ public class RedisResourceProvider : IResourceProvider
 
     public Task<ResourcePlanResult> PlanAsync(ResourceDescriptor resource, PlanContext ctx, CancellationToken ct)
     {
-        var ha = resource.Properties.TryGetValue("ha", out var h) ? h.GetBoolean() : ctx.EnvironmentConfig.Defaults.Ha ?? false;
+        var ha = resource.Properties.TryGetValue("ha", out var h) ? h.GetBoolean() : ctx.EnvironmentConfig.Defaults?.Ha ?? false;
         var size = resource.Size ?? "s";
 
         return Task.FromResult(new ResourcePlanResult
