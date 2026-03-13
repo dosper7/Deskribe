@@ -1,11 +1,7 @@
 using System.CommandLine;
 using Deskribe.Cli.Commands;
-using Deskribe.Core.Config;
+using Deskribe.Core;
 using Deskribe.Core.Engine;
-using Deskribe.Core.Merging;
-using Deskribe.Core.Plugins;
-using Deskribe.Core.Resolution;
-using Deskribe.Core.Validation;
 using Deskribe.Plugins.Backend.Pulumi;
 using Deskribe.Plugins.Resources.Kafka;
 using Deskribe.Plugins.Resources.Postgres;
@@ -22,22 +18,14 @@ services.AddLogging(builder =>
     builder.SetMinimumLevel(LogLevel.Information);
 });
 
-services.AddSingleton<ConfigLoader>();
-services.AddSingleton<MergeEngine>();
-services.AddSingleton<ResourceReferenceResolver>();
-services.AddSingleton<PolicyValidator>();
-services.AddSingleton<PluginHost>();
-services.AddSingleton<DeskribeEngine>();
+services.AddDeskribe(
+    typeof(PostgresPlugin).Assembly,
+    typeof(RedisPlugin).Assembly,
+    typeof(KafkaPlugin).Assembly,
+    typeof(PulumiPlugin).Assembly,
+    typeof(KubernetesPlugin).Assembly);
 
 var serviceProvider = services.BuildServiceProvider();
-
-// Register plugins
-var pluginHost = serviceProvider.GetRequiredService<PluginHost>();
-pluginHost.RegisterPlugin(new PostgresPlugin());
-pluginHost.RegisterPlugin(new RedisPlugin());
-pluginHost.RegisterPlugin(new KafkaPlugin());
-pluginHost.RegisterPlugin(new PulumiPlugin());
-pluginHost.RegisterPlugin(new KubernetesPlugin());
 
 var engine = serviceProvider.GetRequiredService<DeskribeEngine>();
 

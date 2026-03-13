@@ -2,6 +2,7 @@ using Deskribe.Sdk;
 
 namespace Deskribe.Plugins.Resources.Redis;
 
+[DeskribePlugin("redis")]
 public class RedisPlugin : IPlugin
 {
     public string Name => "Redis Resource Provider";

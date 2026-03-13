@@ -4,27 +4,27 @@ using Deskribe.Sdk.Models;
 
 namespace Deskribe.Plugins.Backend.Pulumi;
 
-public class PulumiBackendAdapter : IBackendAdapter
+public class PulumiProvisioner : IProvisioner
 {
     public string Name => "pulumi";
 
-    public async Task<BackendApplyResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
+    public async Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
     {
         var pulumiProjectDir = plan.Platform.Defaults.PulumiProjectDir;
 
         if (string.IsNullOrEmpty(pulumiProjectDir))
         {
-            return new BackendApplyResult
+            return new ProvisionResult
             {
                 Success = false,
-                Errors = ["pulumiProjectDir must be configured in platform defaults to use the Pulumi backend"]
+                Errors = ["pulumiProjectDir must be configured in platform defaults to use the Pulumi provisioner"]
             };
         }
 
         return await ApplyWithLocalProgramAsync(plan, pulumiProjectDir, ct);
     }
 
-    private static async Task<BackendApplyResult> ApplyWithLocalProgramAsync(
+    private static async Task<ProvisionResult> ApplyWithLocalProgramAsync(
         DeskribePlan plan, string projectDir, CancellationToken ct)
     {
         // Local Program mode: Use Pulumi Automation API with an existing Pulumi project
@@ -88,12 +88,12 @@ public class PulumiBackendAdapter : IBackendAdapter
                 outputs[resourcePlan.ResourceType] = resourceOutputs;
             }
 
-            return new BackendApplyResult { Success = true, ResourceOutputs = outputs };
+            return new ProvisionResult { Success = true, ResourceOutputs = outputs };
         }
         catch (Exception ex)
         {
             Console.WriteLine($"[Pulumi] Stack update failed: {ex.Message}");
-            return new BackendApplyResult
+            return new ProvisionResult
             {
                 Success = false,
                 Errors = [$"Pulumi stack update failed: {ex.Message}"]
@@ -105,7 +105,7 @@ public class PulumiBackendAdapter : IBackendAdapter
     {
         var projectDir = platform.Defaults.PulumiProjectDir;
         if (string.IsNullOrEmpty(projectDir))
-            throw new InvalidOperationException("pulumiProjectDir must be configured in platform defaults to use the Pulumi backend");
+            throw new InvalidOperationException("pulumiProjectDir must be configured in platform defaults to use the Pulumi provisioner");
 
         var stackName = $"{appName}-{environment}";
         var workspace = await global::Pulumi.Automation.LocalWorkspace.CreateOrSelectStackAsync(

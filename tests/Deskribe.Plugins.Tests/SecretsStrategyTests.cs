@@ -5,7 +5,7 @@ namespace Deskribe.Plugins.Tests;
 
 public class SecretsStrategyTests
 {
-    private readonly KubernetesRuntimeAdapter _adapter = new();
+    private readonly KubernetesRuntimePlugin _plugin = new();
 
     private static WorkloadPlan CreatePlan(string secretsStrategy = "opaque", string? externalSecretsStore = null) => new()
     {
@@ -28,49 +28,49 @@ public class SecretsStrategyTests
     public async Task OpaqueStrategy_GeneratesV1Secret()
     {
         var plan = CreatePlan("opaque");
-        var manifest = await _adapter.RenderAsync(plan);
+        var artifact = await _plugin.RenderAsync(plan);
 
-        Assert.Contains("kind: Secret", manifest.Yaml);
-        Assert.Contains("type: Opaque", manifest.Yaml);
-        Assert.DoesNotContain("ExternalSecret", manifest.Yaml);
-        Assert.DoesNotContain("sealedsecrets.bitnami.com", manifest.Yaml);
-        Assert.Contains("Secret/test-app-dev/test-app-env", manifest.ResourceNames);
+        Assert.Contains("kind: Secret", artifact.Yaml);
+        Assert.Contains("type: Opaque", artifact.Yaml);
+        Assert.DoesNotContain("ExternalSecret", artifact.Yaml);
+        Assert.DoesNotContain("sealedsecrets.bitnami.com", artifact.Yaml);
+        Assert.Contains("Secret/test-app-dev/test-app-env", artifact.ResourceNames);
     }
 
     [Fact]
     public async Task ExternalSecretsStrategy_GeneratesExternalSecretCrd()
     {
         var plan = CreatePlan("external-secrets", "azure-keyvault");
-        var manifest = await _adapter.RenderAsync(plan);
+        var artifact = await _plugin.RenderAsync(plan);
 
-        Assert.Contains("kind: ExternalSecret", manifest.Yaml);
-        Assert.Contains("external-secrets.io/v1beta1", manifest.Yaml);
-        Assert.Contains("azure-keyvault", manifest.Yaml);
-        Assert.Contains("ClusterSecretStore", manifest.Yaml);
-        Assert.Contains("ExternalSecret/test-app-dev/test-app-env", manifest.ResourceNames);
+        Assert.Contains("kind: ExternalSecret", artifact.Yaml);
+        Assert.Contains("external-secrets.io/v1beta1", artifact.Yaml);
+        Assert.Contains("azure-keyvault", artifact.Yaml);
+        Assert.Contains("ClusterSecretStore", artifact.Yaml);
+        Assert.Contains("ExternalSecret/test-app-dev/test-app-env", artifact.ResourceNames);
     }
 
     [Fact]
     public async Task SealedSecretsStrategy_GeneratesV1SecretWithAnnotation()
     {
         var plan = CreatePlan("sealed-secrets");
-        var manifest = await _adapter.RenderAsync(plan);
+        var artifact = await _plugin.RenderAsync(plan);
 
-        Assert.Contains("kind: Secret", manifest.Yaml);
-        Assert.Contains("type: Opaque", manifest.Yaml);
-        Assert.Contains("sealedsecrets.bitnami.com/managed", manifest.Yaml);
-        Assert.DoesNotContain("ExternalSecret", manifest.Yaml);
-        Assert.Contains("Secret/test-app-dev/test-app-env", manifest.ResourceNames);
+        Assert.Contains("kind: Secret", artifact.Yaml);
+        Assert.Contains("type: Opaque", artifact.Yaml);
+        Assert.Contains("sealedsecrets.bitnami.com/managed", artifact.Yaml);
+        Assert.DoesNotContain("ExternalSecret", artifact.Yaml);
+        Assert.Contains("Secret/test-app-dev/test-app-env", artifact.ResourceNames);
     }
 
     [Fact]
     public async Task DefaultStrategy_FallsBackToOpaque()
     {
         var plan = CreatePlan(); // defaults to "opaque"
-        var manifest = await _adapter.RenderAsync(plan);
+        var artifact = await _plugin.RenderAsync(plan);
 
-        Assert.Contains("kind: Secret", manifest.Yaml);
-        Assert.Contains("type: Opaque", manifest.Yaml);
+        Assert.Contains("kind: Secret", artifact.Yaml);
+        Assert.Contains("type: Opaque", artifact.Yaml);
     }
 
     [Fact]
@@ -87,9 +87,9 @@ public class SecretsStrategyTests
             ExternalSecretsStore = "azure-keyvault"
         };
 
-        var manifest = await _adapter.RenderAsync(plan);
+        var artifact = await _plugin.RenderAsync(plan);
 
-        Assert.DoesNotContain("Secret", manifest.Yaml);
-        Assert.DoesNotContain("ExternalSecret", manifest.Yaml);
+        Assert.DoesNotContain("Secret", artifact.Yaml);
+        Assert.DoesNotContain("ExternalSecret", artifact.Yaml);
     }
 }

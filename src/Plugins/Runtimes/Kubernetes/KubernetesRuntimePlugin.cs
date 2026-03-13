@@ -4,18 +4,18 @@ using k8s.Models;
 
 namespace Deskribe.Plugins.Runtime.Kubernetes;
 
-public class KubernetesRuntimeAdapter : IRuntimeAdapter
+public class KubernetesRuntimePlugin : IRuntimePlugin
 {
     private readonly KubernetesClientConfiguration? _config;
 
-    public KubernetesRuntimeAdapter(KubernetesClientConfiguration? config = null)
+    public KubernetesRuntimePlugin(KubernetesClientConfiguration? config = null)
     {
         _config = config;
     }
 
     public string Name => "kubernetes";
 
-    public Task<WorkloadManifest> RenderAsync(WorkloadPlan workload, CancellationToken ct = default)
+    public Task<RuntimeArtifact> RenderAsync(WorkloadPlan workload, CancellationToken ct = default)
     {
         var resources = new List<object>();
         var resourceNames = new List<string>();
@@ -204,7 +204,7 @@ public class KubernetesRuntimeAdapter : IRuntimeAdapter
             r is string raw ? raw : KubernetesYaml.Serialize(r));
         var yaml = string.Join("---\n", yamlDocuments);
 
-        return Task.FromResult(new WorkloadManifest
+        return Task.FromResult(new RuntimeArtifact
         {
             Namespace = workload.Namespace,
             Yaml = yaml,
@@ -212,12 +212,12 @@ public class KubernetesRuntimeAdapter : IRuntimeAdapter
         });
     }
 
-    public async Task ApplyAsync(WorkloadManifest manifest, CancellationToken ct = default)
+    public async Task ApplyAsync(RuntimeArtifact artifact, CancellationToken ct = default)
     {
         var config = _config ?? KubernetesClientConfiguration.BuildDefaultConfig();
         var client = new k8s.Kubernetes(config);
 
-        var objects = KubernetesYaml.LoadAllFromString(manifest.Yaml);
+        var objects = KubernetesYaml.LoadAllFromString(artifact.Yaml);
 
         foreach (var obj in objects)
         {

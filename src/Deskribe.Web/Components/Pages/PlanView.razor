@@ -121,7 +121,7 @@ else if (plan != null)
                             <tr>
                                 <td><span class="badge badge-resource">@rp.ResourceType</span></td>
                                 <td><span class="badge badge-create">@rp.Action</span></td>
-                                <td>@(plan.Platform.Backends.GetValueOrDefault(rp.ResourceType, "—"))</td>
+                                <td>@(plan.Platform.Provisioners.GetValueOrDefault(rp.ResourceType, "—"))</td>
                                 <td style="font-family: monospace;">@(rp.Configuration.GetValueOrDefault("namespace")?.ToString() ?? "—")</td>
                                 <td style="font-family: monospace; font-size: 12px;">@(rp.Configuration.GetValueOrDefault("helmChart")?.ToString() ?? "—")</td>
                             </tr>
@@ -208,11 +208,11 @@ else if (plan != null)
             plan = await UiService.PlanAsync(AppName, Environment, "nginx:latest");
 
             // Generate YAML preview
-            var k8sAdapter = new Deskribe.Plugins.Runtime.Kubernetes.KubernetesRuntimeAdapter();
+            var k8sPlugin = new Deskribe.Plugins.Runtime.Kubernetes.KubernetesRuntimePlugin();
             if (plan.Workload != null)
             {
-                var manifest = await k8sAdapter.RenderAsync(plan.Workload, CancellationToken.None);
-                yamlPreview = manifest.Yaml;
+                var artifact = await k8sPlugin.RenderAsync(plan.Workload, CancellationToken.None);
+                yamlPreview = artifact.Yaml;
             }
         }
         catch (Exception ex)

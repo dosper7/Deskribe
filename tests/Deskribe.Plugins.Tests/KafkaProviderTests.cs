@@ -1,7 +1,7 @@
+using System.Text.Json;
 using Deskribe.Plugins.Resources.Kafka;
 using Deskribe.Sdk;
 using Deskribe.Sdk.Models;
-using Deskribe.Sdk.Resources;
 
 namespace Deskribe.Plugins.Tests;
 
@@ -14,29 +14,35 @@ public class KafkaProviderTests
         Platform = new PlatformConfig
         {
             Defaults = new PlatformDefaults { NamespacePattern = "{app}-{env}" },
-            Backends = new Dictionary<string, string> { ["kafka.messaging"] = "pulumi" }
+            Provisioners = new Dictionary<string, string> { ["kafka.messaging"] = "pulumi" }
         },
         Environment = "dev"
     };
 
+    private static ResourceDescriptor CreateKafkaResource(params object[] topics)
+    {
+        var topicsJson = JsonSerializer.SerializeToElement(topics);
+        return new ResourceDescriptor
+        {
+            Type = "kafka.messaging",
+            Properties = new Dictionary<string, JsonElement>
+            {
+                ["topics"] = topicsJson
+            }
+        };
+    }
+
     [Fact]
     public async Task Validate_PassesForValidResource()
     {
-        var resource = new KafkaMessagingResource
+        var resource = CreateKafkaResource(new
         {
-            Type = "kafka.messaging",
-            Topics =
-            [
-                new KafkaTopic
-                {
-                    Name = "events",
-                    Partitions = 6,
-                    RetentionHours = 168,
-                    Owners = ["team-a"],
-                    Consumers = ["team-b"]
-                }
-            ]
-        };
+            name = "events",
+            partitions = 6,
+            retentionHours = 168,
+            owners = new[] { "team-a" },
+            consumers = new[] { "team-b" }
+        });
 
         var result = await _provider.ValidateAsync(resource, CreateContext(), CancellationToken.None);
         Assert.True(result.IsValid);
@@ -45,7 +51,10 @@ public class KafkaProviderTests
     [Fact]
     public async Task Validate_FailsForNoTopics()
     {
-        var resource = new KafkaMessagingResource { Type = "kafka.messaging" };
+        var resource = new ResourceDescriptor
+        {
+            Type = "kafka.messaging"
+        };
         var result = await _provider.ValidateAsync(resource, CreateContext(), CancellationToken.None);
         Assert.False(result.IsValid);
         Assert.Contains("at least one topic", result.Errors[0]);
@@ -54,11 +63,11 @@ public class KafkaProviderTests
     [Fact]
     public async Task Validate_FailsForTopicWithNoOwner()
     {
-        var resource = new KafkaMessagingResource
+        var resource = CreateKafkaResource(new
         {
-            Type = "kafka.messaging",
-            Topics = [new KafkaTopic { Name = "events", Partitions = 3 }]
-        };
+            name = "events",
+            partitions = 3
+        });
 
         var result = await _provider.ValidateAsync(resource, CreateContext(), CancellationToken.None);
         Assert.False(result.IsValid);

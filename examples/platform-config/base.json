@@ -9,7 +9,7 @@
     "namespacePattern": "{app}-{env}",
     "pulumiProjectDir": "examples/weather-api/infra"
   },
-  "backends": {
+  "provisioners": {
     "postgres": "pulumi",
     "redis": "pulumi",
     "kafka.messaging": "pulumi"

@@ -26,13 +26,13 @@ public class DeskribeEngineTests : IDisposable
         var mergeEngine = new MergeEngine(NullLogger<MergeEngine>.Instance);
         var resolver = new ResourceReferenceResolver(NullLogger<ResourceReferenceResolver>.Instance);
         var validator = new PolicyValidator(NullLogger<PolicyValidator>.Instance);
-        var pluginHost = new PluginHost(NullLogger<PluginHost>.Instance);
+        var pluginRegistry = new PluginRegistry(NullLogger<PluginRegistry>.Instance);
 
-        pluginHost.RegisterPlugin(new PostgresPlugin());
-        pluginHost.RegisterPlugin(new RedisPlugin());
-        pluginHost.RegisterPlugin(new KafkaPlugin());
+        pluginRegistry.RegisterPlugin(new PostgresPlugin());
+        pluginRegistry.RegisterPlugin(new RedisPlugin());
+        pluginRegistry.RegisterPlugin(new KafkaPlugin());
 
-        _engine = new DeskribeEngine(configLoader, mergeEngine, resolver, validator, pluginHost,
+        _engine = new DeskribeEngine(configLoader, mergeEngine, resolver, validator, pluginRegistry,
             NullLogger<DeskribeEngine>.Instance);
     }
 
@@ -64,7 +64,7 @@ public class DeskribeEngineTests : IDisposable
         {
             "organization": "acme",
             "defaults": { "replicas": 2, "cpu": "250m", "memory": "512Mi", "namespacePattern": "{app}-{env}" },
-            "backends": { "postgres": "pulumi" },
+            "provisioners": { "postgres": "pulumi" },
             "policies": { "allowedRegions": ["westeurope"], "enforceTLS": true }
         }
         """);
@@ -104,7 +104,7 @@ public class DeskribeEngineTests : IDisposable
         {
             "organization": "acme",
             "defaults": { "replicas": 2, "cpu": "250m", "memory": "512Mi", "namespacePattern": "{app}-{env}" },
-            "backends": { "postgres": "pulumi" },
+            "provisioners": { "postgres": "pulumi" },
             "policies": {}
         }
         """);
@@ -145,7 +145,7 @@ public class DeskribeEngineTests : IDisposable
         {
             "organization": "acme",
             "defaults": { "replicas": 2, "cpu": "250m", "memory": "512Mi", "namespacePattern": "{app}-{env}" },
-            "backends": { "postgres": "pulumi", "redis": "pulumi" },
+            "provisioners": { "postgres": "pulumi", "redis": "pulumi" },
             "policies": {}
         }
         """);

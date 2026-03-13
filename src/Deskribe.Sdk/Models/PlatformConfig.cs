@@ -10,8 +10,8 @@ public sealed record PlatformConfig
     [JsonPropertyName("defaults")]
     public PlatformDefaults Defaults { get; init; } = new();
 
-    [JsonPropertyName("backends")]
-    public Dictionary<string, string> Backends { get; init; } = new();
+    [JsonPropertyName("provisioners")]
+    public Dictionary<string, string> Provisioners { get; init; } = new();
 
     [JsonPropertyName("policies")]
     public PlatformPolicies Policies { get; init; } = new();

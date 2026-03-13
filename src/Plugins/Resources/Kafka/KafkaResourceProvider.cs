@@ -1,6 +1,6 @@
+using System.Text.Json;
 using Deskribe.Sdk;
 using Deskribe.Sdk.Models;
-using Deskribe.Sdk.Resources;
 
 namespace Deskribe.Plugins.Resources.Kafka;
 
@@ -8,17 +8,26 @@ public class KafkaResourceProvider : IResourceProvider
 {
     public string ResourceType => "kafka.messaging";
 
-    public Task<ValidationResult> ValidateAsync(DeskribeResource resource, ValidationContext ctx, CancellationToken ct)
+    public ResourceSchema GetSchema() => new()
     {
-        if (resource is not KafkaMessagingResource kafka)
-            return Task.FromResult(ValidationResult.Invalid($"Expected KafkaMessagingResource but got {resource.GetType().Name}"));
+        ResourceType = "kafka.messaging",
+        Description = "Kafka messaging with topic management",
+        Properties =
+        [
+            new() { Name = "topics", ValueType = "array", Required = true, Description = "List of Kafka topics" }
+        ],
+        ProvidedOutputs = ["endpoint", "bootstrapServers"]
+    };
 
+    public Task<ValidationResult> ValidateAsync(ResourceDescriptor resource, ValidationContext ctx, CancellationToken ct)
+    {
         var errors = new List<string>();
+        var topics = ExtractTopics(resource);
 
-        if (kafka.Topics.Count == 0)
+        if (topics.Count == 0)
             errors.Add("Kafka messaging resource must have at least one topic");
 
-        foreach (var topic in kafka.Topics)
+        foreach (var topic in topics)
         {
             if (string.IsNullOrWhiteSpace(topic.Name))
                 errors.Add("Kafka topic name is required");
@@ -38,11 +47,11 @@ public class KafkaResourceProvider : IResourceProvider
             : ValidationResult.Invalid([.. errors]));
     }
 
-    public Task<ResourcePlanResult> PlanAsync(DeskribeResource resource, PlanContext ctx, CancellationToken ct)
+    public Task<ResourcePlanResult> PlanAsync(ResourceDescriptor resource, PlanContext ctx, CancellationToken ct)
     {
-        var kafka = (KafkaMessagingResource)resource;
+        var topics = ExtractTopics(resource);
 
-        var topicConfigs = kafka.Topics.Select(t => new Dictionary<string, object?>
+        var topicConfigs = topics.Select(t => new Dictionary<string, object?>
         {
             ["name"] = t.Name,
             ["partitions"] = t.Partitions ?? 3,
@@ -69,4 +78,38 @@ public class KafkaResourceProvider : IResourceProvider
             }
         });
     }
+
+    private static List<KafkaTopicConfig> ExtractTopics(ResourceDescriptor resource)
+    {
+        if (!resource.Properties.TryGetValue("topics", out var topicsElement))
+            return [];
+
+        var topics = new List<KafkaTopicConfig>();
+        foreach (var item in topicsElement.EnumerateArray())
+        {
+            topics.Add(new KafkaTopicConfig
+            {
+                Name = item.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
+                Partitions = item.TryGetProperty("partitions", out var p) ? p.GetInt32() : null,
+                RetentionHours = item.TryGetProperty("retentionHours", out var r) ? r.GetInt32() : null,
+                Owners = item.TryGetProperty("owners", out var o)
+                    ? o.EnumerateArray().Select(e => e.GetString() ?? "").ToList()
+                    : [],
+                Consumers = item.TryGetProperty("consumers", out var c)
+                    ? c.EnumerateArray().Select(e => e.GetString() ?? "").ToList()
+                    : []
+            });
+        }
+
+        return topics;
+    }
+}
+
+internal sealed record KafkaTopicConfig
+{
+    public string Name { get; init; } = "";
+    public int? Partitions { get; init; }
+    public int? RetentionHours { get; init; }
+    public List<string> Owners { get; init; } = [];
+    public List<string> Consumers { get; init; } = [];
 }

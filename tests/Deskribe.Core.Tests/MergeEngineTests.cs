@@ -1,7 +1,6 @@
 using Deskribe.Core.Merging;
 using Deskribe.Sdk;
 using Deskribe.Sdk.Models;
-using Deskribe.Sdk.Resources;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Deskribe.Core.Tests;
@@ -19,7 +18,7 @@ public class MergeEngineTests
         return new DeskribeManifest
         {
             Name = "test-app",
-            Resources = [new PostgresResource { Type = "postgres", Size = "m" }],
+            Resources = [new ResourceDescriptor { Type = "postgres", Size = "m" }],
             Services =
             [
                 new ServiceDefinition
@@ -46,7 +45,7 @@ public class MergeEngineTests
             Memory = "512Mi",
             NamespacePattern = "{app}-{env}"
         },
-        Backends = new Dictionary<string, string> { ["postgres"] = "pulumi" }
+        Provisioners = new Dictionary<string, string> { ["postgres"] = "pulumi" }
     };
 
     [Fact]

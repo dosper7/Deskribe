@@ -1,5 +1,4 @@
 using Deskribe.Sdk.Models;
-using Deskribe.Sdk.Resources;
 using Microsoft.Extensions.Logging;
 
 namespace Deskribe.Core.Validation;
@@ -25,9 +24,9 @@ public class PolicyValidator
 
         foreach (var resource in manifest.Resources)
         {
-            if (!platform.Backends.ContainsKey(resource.Type))
+            if (!platform.Provisioners.ContainsKey(resource.Type))
             {
-                warnings.Add($"Resource type '{resource.Type}' has no configured backend in platform config");
+                warnings.Add($"Resource type '{resource.Type}' has no configured provisioner in platform config");
             }
         }
 

@@ -51,7 +51,7 @@
                             <td style="font-weight: 600;">@appName</td>
                             <td><span class="badge badge-resource">@r.Type</span></td>
                             <td>@(r.Size ?? "default")</td>
-                            <td>@(platformConfig?.Backends.GetValueOrDefault(r.Type) ?? "—")</td>
+                            <td>@(platformConfig?.Provisioners.GetValueOrDefault(r.Type) ?? "—")</td>
                             <td><span class="badge badge-healthy"><span class="status-dot healthy"></span> Ready</span></td>
                         </tr>
                     }

@@ -1,13 +1,13 @@
 using Deskribe.Sdk.Models;
-using Deskribe.Sdk.Resources;
 
 namespace Deskribe.Sdk;
 
 public interface IResourceProvider
 {
     string ResourceType { get; }
-    Task<ValidationResult> ValidateAsync(DeskribeResource resource, ValidationContext ctx, CancellationToken ct = default);
-    Task<ResourcePlanResult> PlanAsync(DeskribeResource resource, PlanContext ctx, CancellationToken ct = default);
+    ResourceSchema GetSchema();
+    Task<ValidationResult> ValidateAsync(ResourceDescriptor resource, ValidationContext ctx, CancellationToken ct = default);
+    Task<ResourcePlanResult> PlanAsync(ResourceDescriptor resource, PlanContext ctx, CancellationToken ct = default);
 }
 
 public record ValidationContext

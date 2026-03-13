@@ -1,7 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Deskribe.Sdk.Models;
-using Deskribe.Sdk.Resources;
 using Microsoft.Extensions.Logging;
 
 namespace Deskribe.Core.Config;
@@ -13,8 +12,7 @@ public class ConfigLoader
     {
         PropertyNameCaseInsensitive = true,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-        Converters = { new ResourceJsonConverter() }
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
     };
 
     public ConfigLoader(ILogger<ConfigLoader> logger)
@@ -53,33 +51,5 @@ public class ConfigLoader
         var json = await File.ReadAllTextAsync(envPath, ct);
         return JsonSerializer.Deserialize<EnvironmentConfig>(json, JsonOptions)
             ?? throw new InvalidOperationException($"Failed to deserialize environment config from {envPath}");
-    }
-}
-
-internal class ResourceJsonConverter : JsonConverter<DeskribeResource>
-{
-    public override DeskribeResource? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
-    {
-        using var doc = JsonDocument.ParseValue(ref reader);
-        var root = doc.RootElement;
-
-        if (!root.TryGetProperty("type", out var typeProp))
-            throw new JsonException("Resource must have a 'type' property");
-
-        var type = typeProp.GetString();
-        var rawJson = root.GetRawText();
-
-        return type switch
-        {
-            "postgres" => JsonSerializer.Deserialize<PostgresResource>(rawJson, options),
-            "redis" => JsonSerializer.Deserialize<RedisResource>(rawJson, options),
-            "kafka.messaging" => JsonSerializer.Deserialize<KafkaMessagingResource>(rawJson, options),
-            _ => throw new JsonException($"Unknown resource type: {type}")
-        };
-    }
-
-    public override void Write(Utf8JsonWriter writer, DeskribeResource value, JsonSerializerOptions options)
-    {
-        JsonSerializer.Serialize(writer, value, value.GetType(), options);
     }
 }

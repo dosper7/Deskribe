@@ -9,7 +9,6 @@ public interface IPlugin
 public interface IPluginRegistrar
 {
     void RegisterResourceProvider(IResourceProvider provider);
-    void RegisterBackendAdapter(IBackendAdapter adapter);
-    void RegisterRuntimeAdapter(IRuntimeAdapter adapter);
-    void RegisterMessagingProvider(IMessagingProvider provider);
+    void RegisterProvisioner(IProvisioner provisioner);
+    void RegisterRuntimePlugin(IRuntimePlugin runtime);
 }

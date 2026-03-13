@@ -1,6 +1,5 @@
 using Deskribe.Sdk;
 using Deskribe.Sdk.Models;
-using Deskribe.Sdk.Resources;
 
 namespace Deskribe.Plugins.Resources.Redis;
 
@@ -10,27 +9,35 @@ public class RedisResourceProvider : IResourceProvider
 
     private static readonly HashSet<string> ValidSizes = ["xs", "s", "m", "l", "xl"];
 
-    public Task<ValidationResult> ValidateAsync(DeskribeResource resource, ValidationContext ctx, CancellationToken ct)
+    public ResourceSchema GetSchema() => new()
     {
-        if (resource is not RedisResource redis)
-            return Task.FromResult(ValidationResult.Invalid($"Expected RedisResource but got {resource.GetType().Name}"));
+        ResourceType = "redis",
+        Description = "Redis cache",
+        Properties =
+        [
+            new() { Name = "version", ValueType = "string", Description = "Redis version" },
+            new() { Name = "ha", ValueType = "bool", Description = "Enable high availability" },
+            new() { Name = "maxMemoryMb", ValueType = "int", Description = "Maximum memory in MB" }
+        ],
+        ProvidedOutputs = ["endpoint", "host", "port"]
+    };
 
+    public Task<ValidationResult> ValidateAsync(ResourceDescriptor resource, ValidationContext ctx, CancellationToken ct)
+    {
         var errors = new List<string>();
 
-        if (redis.Size is not null && !ValidSizes.Contains(redis.Size))
-            errors.Add($"Invalid Redis size '{redis.Size}'. Valid sizes: {string.Join(", ", ValidSizes)}");
+        if (resource.Size is not null && !ValidSizes.Contains(resource.Size))
+            errors.Add($"Invalid Redis size '{resource.Size}'. Valid sizes: {string.Join(", ", ValidSizes)}");
 
         return Task.FromResult(errors.Count == 0
             ? ValidationResult.Valid()
             : ValidationResult.Invalid([.. errors]));
     }
 
-    public Task<ResourcePlanResult> PlanAsync(DeskribeResource resource, PlanContext ctx, CancellationToken ct)
+    public Task<ResourcePlanResult> PlanAsync(ResourceDescriptor resource, PlanContext ctx, CancellationToken ct)
     {
-        var redis = resource as RedisResource;
-        var ha = redis?.Ha ?? ctx.EnvironmentConfig.Defaults.Ha ?? false;
-
-        var size = redis?.Size ?? "s";
+        var ha = resource.Properties.TryGetValue("ha", out var h) ? h.GetBoolean() : ctx.EnvironmentConfig.Defaults.Ha ?? false;
+        var size = resource.Size ?? "s";
 
         return Task.FromResult(new ResourcePlanResult
         {

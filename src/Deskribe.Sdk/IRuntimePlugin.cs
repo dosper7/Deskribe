@@ -1,10 +1,10 @@
 namespace Deskribe.Sdk;
 
-public interface IRuntimeAdapter
+public interface IRuntimePlugin
 {
     string Name { get; }
-    Task<WorkloadManifest> RenderAsync(WorkloadPlan workload, CancellationToken ct = default);
-    Task ApplyAsync(WorkloadManifest manifest, CancellationToken ct = default);
+    Task<RuntimeArtifact> RenderAsync(WorkloadPlan workload, CancellationToken ct = default);
+    Task ApplyAsync(RuntimeArtifact artifact, CancellationToken ct = default);
     Task DestroyAsync(string namespaceName, CancellationToken ct = default);
 }
 
@@ -22,7 +22,7 @@ public record WorkloadPlan
     public string? ExternalSecretsStore { get; init; }
 }
 
-public record WorkloadManifest
+public record RuntimeArtifact
 {
     public required string Namespace { get; init; }
     public required string Yaml { get; init; }

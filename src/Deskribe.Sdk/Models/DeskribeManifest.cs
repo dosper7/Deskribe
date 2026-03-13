@@ -1,5 +1,4 @@
 using System.Text.Json.Serialization;
-using Deskribe.Sdk.Resources;
 
 namespace Deskribe.Sdk.Models;
 
@@ -9,7 +8,7 @@ public sealed record DeskribeManifest
     public required string Name { get; init; }
 
     [JsonPropertyName("resources")]
-    public List<DeskribeResource> Resources { get; init; } = [];
+    public List<ResourceDescriptor> Resources { get; init; } = [];
 
     [JsonPropertyName("services")]
     public List<ServiceDefinition> Services { get; init; } = [];

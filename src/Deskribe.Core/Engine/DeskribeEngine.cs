@@ -17,7 +17,7 @@ public class DeskribeEngine
     private readonly MergeEngine _mergeEngine;
     private readonly ResourceReferenceResolver _resolver;
     private readonly PolicyValidator _validator;
-    private readonly PluginHost _pluginHost;
+    private readonly PluginRegistry _pluginRegistry;
     private readonly ILogger<DeskribeEngine> _logger;
 
     public DeskribeEngine(
@@ -25,14 +25,14 @@ public class DeskribeEngine
         MergeEngine mergeEngine,
         ResourceReferenceResolver resolver,
         PolicyValidator validator,
-        PluginHost pluginHost,
+        PluginRegistry pluginRegistry,
         ILogger<DeskribeEngine> logger)
     {
         _configLoader = configLoader;
         _mergeEngine = mergeEngine;
         _resolver = resolver;
         _validator = validator;
-        _pluginHost = pluginHost;
+        _pluginRegistry = pluginRegistry;
         _logger = logger;
     }
 
@@ -74,7 +74,7 @@ public class DeskribeEngine
 
         foreach (var resource in manifest.Resources)
         {
-            var provider = _pluginHost.GetResourceProvider(resource.Type);
+            var provider = _pluginRegistry.GetResourceProvider(resource.Type);
             if (provider is null)
             {
                 allErrors.Add($"No resource provider registered for type '{resource.Type}'");
@@ -134,7 +134,7 @@ public class DeskribeEngine
 
         foreach (var resource in manifest.Resources)
         {
-            var provider = _pluginHost.GetResourceProvider(resource.Type);
+            var provider = _pluginRegistry.GetResourceProvider(resource.Type);
             if (provider is null)
             {
                 warnings.Add($"No provider for resource type '{resource.Type}', skipping");
@@ -163,27 +163,27 @@ public class DeskribeEngine
     {
         _logger.LogInformation("Applying plan for {App} in {Env}", plan.AppName, plan.Environment);
 
-        // 1. Apply infra via backend adapters
+        // 1. Apply infra via provisioners
         var resourceOutputs = new Dictionary<string, Dictionary<string, string>>();
 
         foreach (var resourcePlan in plan.ResourcePlans)
         {
-            var backendName = plan.Platform.Backends.GetValueOrDefault(resourcePlan.ResourceType, "pulumi");
-            var backend = _pluginHost.GetBackendAdapter(backendName);
+            var provisionerName = plan.Platform.Provisioners.GetValueOrDefault(resourcePlan.ResourceType, "pulumi");
+            var provisioner = _pluginRegistry.GetProvisioner(provisionerName);
 
-            if (backend is null)
+            if (provisioner is null)
             {
-                _logger.LogWarning("No backend adapter '{Backend}' for resource '{Type}', skipping apply",
-                    backendName, resourcePlan.ResourceType);
+                _logger.LogWarning("No provisioner '{Provisioner}' for resource '{Type}', skipping apply",
+                    provisionerName, resourcePlan.ResourceType);
                 continue;
             }
 
-            var result = await backend.ApplyAsync(plan, ct);
+            var result = await provisioner.ApplyAsync(plan, ct);
 
             if (!result.Success)
             {
                 throw new InvalidOperationException(
-                    $"Backend apply failed for {resourcePlan.ResourceType}: {string.Join(", ", result.Errors)}");
+                    $"Provisioner apply failed for {resourcePlan.ResourceType}: {string.Join(", ", result.Errors)}");
             }
 
             foreach (var (key, outputs) in result.ResourceOutputs)
@@ -200,16 +200,16 @@ public class DeskribeEngine
 
             // 3. Deploy to runtime
             var runtimeName = plan.Platform.Defaults.Runtime;
-            var runtime = _pluginHost.GetRuntimeAdapter(runtimeName);
+            var runtime = _pluginRegistry.GetRuntimePlugin(runtimeName);
 
             if (runtime is null)
             {
-                _logger.LogWarning("No runtime adapter '{Runtime}', skipping deployment", runtimeName);
+                _logger.LogWarning("No runtime plugin '{Runtime}', skipping deployment", runtimeName);
                 return;
             }
 
-            var manifest = await runtime.RenderAsync(resolvedWorkload, ct);
-            await runtime.ApplyAsync(manifest, ct);
+            var artifact = await runtime.RenderAsync(resolvedWorkload, ct);
+            await runtime.ApplyAsync(artifact, ct);
 
             _logger.LogInformation("Deployment complete for {App} in {Env}", plan.AppName, plan.Environment);
         }
@@ -228,7 +228,7 @@ public class DeskribeEngine
 
         // Destroy runtime resources
         var runtimeName = platform.Defaults.Runtime;
-        var runtime = _pluginHost.GetRuntimeAdapter(runtimeName);
+        var runtime = _pluginRegistry.GetRuntimePlugin(runtimeName);
         if (runtime is not null)
         {
             var ns = platform.Defaults.NamespacePattern
@@ -237,13 +237,13 @@ public class DeskribeEngine
             await runtime.DestroyAsync(ns, ct);
         }
 
-        // Destroy infra via backend adapters
-        foreach (var (resourceType, backendName) in platform.Backends)
+        // Destroy infra via provisioners
+        foreach (var (resourceType, provisionerName) in platform.Provisioners)
         {
-            var backend = _pluginHost.GetBackendAdapter(backendName);
-            if (backend is not null)
+            var provisioner = _pluginRegistry.GetProvisioner(provisionerName);
+            if (provisioner is not null)
             {
-                await backend.DestroyAsync(manifest.Name, environment, platform, ct);
+                await provisioner.DestroyAsync(manifest.Name, environment, platform, ct);
             }
         }
 

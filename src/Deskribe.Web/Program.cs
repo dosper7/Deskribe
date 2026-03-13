@@ -1,11 +1,6 @@
 using Deskribe.Web.Components;
 using Deskribe.Web.Services;
-using Deskribe.Core.Config;
-using Deskribe.Core.Engine;
-using Deskribe.Core.Merging;
-using Deskribe.Core.Plugins;
-using Deskribe.Core.Resolution;
-using Deskribe.Core.Validation;
+using Deskribe.Core;
 using Deskribe.Plugins.Backend.Pulumi;
 using Deskribe.Plugins.Resources.Kafka;
 using Deskribe.Plugins.Resources.Postgres;
@@ -19,21 +14,13 @@ builder.AddServiceDefaults();
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-builder.Services.AddSingleton<ConfigLoader>();
-builder.Services.AddSingleton<MergeEngine>();
-builder.Services.AddSingleton<ResourceReferenceResolver>();
-builder.Services.AddSingleton<PolicyValidator>();
-builder.Services.AddSingleton<PluginHost>(sp =>
-{
-    var host = new PluginHost(sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PluginHost>>());
-    host.RegisterPlugin(new PostgresPlugin());
-    host.RegisterPlugin(new RedisPlugin());
-    host.RegisterPlugin(new KafkaPlugin());
-    host.RegisterPlugin(new PulumiPlugin());
-    host.RegisterPlugin(new KubernetesPlugin());
-    return host;
-});
-builder.Services.AddSingleton<DeskribeEngine>();
+builder.Services.AddDeskribe(
+    typeof(PostgresPlugin).Assembly,
+    typeof(RedisPlugin).Assembly,
+    typeof(KafkaPlugin).Assembly,
+    typeof(PulumiPlugin).Assembly,
+    typeof(KubernetesPlugin).Assembly);
+
 builder.Services.AddSingleton<DeskribeUiService>();
 
 var app = builder.Build();

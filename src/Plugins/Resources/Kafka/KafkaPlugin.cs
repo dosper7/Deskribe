@@ -2,6 +2,7 @@ using Deskribe.Sdk;
 
 namespace Deskribe.Plugins.Resources.Kafka;
 
+[DeskribePlugin("kafka")]
 public class KafkaPlugin : IPlugin
 {
     public string Name => "Kafka Messaging Provider";
@@ -9,6 +10,5 @@ public class KafkaPlugin : IPlugin
     public void Register(IPluginRegistrar registrar)
     {
         registrar.RegisterResourceProvider(new KafkaResourceProvider());
-        registrar.RegisterMessagingProvider(new KafkaMessagingProvider());
     }
 }
