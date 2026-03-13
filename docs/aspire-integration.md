@@ -77,7 +77,7 @@ When you run `dotnet run --project src/Deskribe.AppHost`, the following happens:
 
 1. **Aspire creates a DistributedApplicationBuilder** -- the standard Aspire entry point.
 
-2. **`AddDeskribeManifest(path)` is called** -- this reads your `deskribe.json` from disk and deserializes it into a `DeskribeManifest` object. The JSON converter handles polymorphic deserialization, mapping `"type": "postgres"` to `PostgresResource`, `"type": "redis"` to `RedisResource`, etc.
+2. **`AddDeskribeManifest(path)` is called** -- this reads your `deskribe.json` from disk and deserializes it into a `DeskribeManifest` object. Each resource is deserialized as a `ResourceDescriptor` which uses `[JsonExtensionData]` -- no custom converters needed. All unknown JSON properties land in a `Properties` dictionary automatically.
 
 3. **For each resource in the manifest**, the extension method calls the appropriate Aspire builder:
 
@@ -87,8 +87,8 @@ When you run `dotnet run --project src/Deskribe.AppHost`, the following happens:
    | `redis`             | `builder.AddRedis(name)`                                   |
    | `kafka.messaging`   | `builder.AddKafka(name)`                                   |
 
-4. **Local-dev settings are derived from existing resource properties** -- Aspire does not read a separate config section. Instead, it derives everything from standard resource properties:
-   - `Version` property on the resource calls `.WithImageTag(version)` (e.g., `"version": "16"` on postgres results in image tag `16`)
+4. **Local-dev settings are derived from resource properties** -- Aspire does not read a separate config section. Instead, it derives everything from `ResourceDescriptor.Properties`:
+   - `resource.Properties.TryGetValue("version", out var v)` extracts the version, which is passed to `.WithImageTag(version)` (e.g., `"version": "16"` on postgres results in image tag `16`)
    - Admin tools (PgAdmin, RedisInsight, KafkaUI) are always enabled in local dev
    - Persistence is always enabled (`ContainerLifetime.Persistent`) -- containers survive AppHost restarts
    - No environment variable injection from the manifest
@@ -182,7 +182,7 @@ Aspire is a transparent engine. It reads standard resource properties from `desk
 
 | Resource Property | Aspire Behavior                                                                 |
 |-------------------|---------------------------------------------------------------------------------|
-| `Version`         | Used as the container image tag via `.WithImageTag(version)`. If a resource has `"version": "16"`, the container runs with image tag `16`. If no `Version` is set, Aspire uses its built-in default image. |
+| `version` (from `Properties`) | Extracted via `resource.Properties.TryGetValue("version", out var v)` and used as the container image tag via `.WithImageTag(version)`. If a resource has `"version": "16"`, the container runs with image tag `16`. If no version is present in Properties, Aspire uses its built-in default image. |
 | Admin tools       | Always enabled in local dev. PgAdmin for Postgres, RedisInsight for Redis, KafkaUI for Kafka. There is no option to disable them. |
 | Persistence       | Always enabled. All containers use `ContainerLifetime.Persistent`, meaning they survive AppHost restarts. Data is preserved between runs. |
 
@@ -335,7 +335,7 @@ builder.Build().Run();
 ### How `AddDeskribeManifest` Works Internally
 
 ```
-  AddDeskribeManifest(manifestPath)
+  AddDeskribeManifest(manifestPath, additionalProjections?)
        |
        v
   1. Read file from disk
@@ -343,48 +343,40 @@ builder.Build().Run();
        File.ReadAllText(fullPath)
        |
        v
-  2. Deserialize JSON with polymorphic converter
-       JsonSerializer.Deserialize<DeskribeManifest>(json, options)
+  2. Deserialize JSON — ResourceDescriptor uses [JsonExtensionData],
+     no custom converters needed. All resource properties captured
+     automatically in the Properties dictionary.
+       JsonSerializer.Deserialize<DeskribeManifest>(json)
        |
-       |  The ManifestResourceJsonConverter reads the "type" field
-       |  and deserializes to the correct C# type:
-       |    "postgres"        -> PostgresResource
-       |    "redis"           -> RedisResource
-       |    "kafka.messaging" -> KafkaMessagingResource
+       |  Each resource becomes a ResourceDescriptor with:
+       |    - Type   (e.g., "postgres", "redis", "kafka.messaging")
+       |    - Properties  (Dictionary<string, object?> via [JsonExtensionData])
        |
        v
   3. Create a DeskribeResourceMap(manifest.Name)
        This is the container for all Aspire resources
        |
        v
-  4. For each resource in manifest.Resources:
-       |
-       +-- "postgres" -----> AddPostgresResource()
-       |     builder.AddPostgres("{app}-postgres")
-       |       .WithImageTag(version)                   // if resource has Version
-       |       .WithPgAdmin()                           // always on
-       |       .WithLifetime(Persistent)                // always on
-       |     server.AddDatabase("{app}-db")
-       |     map.AddConnectionStringResource(db)
-       |     map.AddWaitForResource(db)
-       |
-       +-- "redis" --------> AddRedisResource()
-       |     builder.AddRedis("{app}-redis")
-       |       .WithImageTag(version)                   // if resource has Version
-       |       .WithRedisInsight()                      // always on
-       |       .WithLifetime(Persistent)                // always on
-       |     map.AddConnectionStringResource(redis)
-       |     map.AddWaitForResource(redis)
-       |
-       +-- "kafka.messaging" -> AddKafkaResource()
-             builder.AddKafka("{app}-kafka")
-               .WithKafkaUI()                           // always on
-               .WithLifetime(Persistent)                // always on
-             map.AddConnectionStringResource(kafka)
-             map.AddWaitForResource(kafka)
+  4. Build projection lookup: Dictionary<string, IAspireProjection>
+       Built-in projections registered by default:
+         "postgres"        -> PostgresAspireProjection
+         "redis"           -> RedisAspireProjection
+         "kafka.messaging" -> KafkaAspireProjection
+       Any additionalProjections passed by the caller are merged in
        |
        v
-  5. Return the DeskribeResourceMap
+  5. For each resource in manifest.Resources:
+       Look up projections[resource.Type]
+       Call projection.Project(builder, appName, resource, map)
+       |
+       |  Each IAspireProjection implementation:
+       |    - Extracts config from resource.Properties
+       |      e.g., resource.Properties.TryGetValue("version", out var v)
+       |    - Calls the appropriate Aspire builder methods
+       |    - Registers results in the DeskribeResourceMap
+       |
+       v
+  6. Return the DeskribeResourceMap
 ```
 
 ### How `WithDeskribeResources` Wires Connection Strings
@@ -419,99 +411,78 @@ builder.Build().Run();
 
 ## 5. Adding a Custom Resource to Aspire
 
-If you are building a new Deskribe plugin (for example, MongoDB), you need to add Aspire support so that the resource works in local development.
+If you are building a new Deskribe plugin (for example, MongoDB), you need to add Aspire support so that the resource works in local development. The new architecture uses `ResourceDescriptor` and `IAspireProjection` -- there is no need to create resource subclasses or update JSON converters.
 
-### Step 1: Define the SDK Resource
+### Step 1: Implement the `IAspireProjection` Interface
 
-Create a new resource type in `Deskribe.Sdk`:
-
-```csharp
-// File: src/Deskribe.Sdk/Resources/MongoDbResource.cs
-
-namespace Deskribe.Sdk.Resources;
-
-public sealed record MongoDbResource : DeskribeResource
-{
-    public string? Version { get; init; }
-    public bool? ReplicaSet { get; init; }
-    public string? DatabaseName { get; init; }
-}
-```
-
-### Step 2: Register the Type in the JSON Converter
-
-Add the new type to the `ManifestResourceJsonConverter` switch expression in `DeskribeAspireExtensions.cs`:
+Create a new projection class that implements `IAspireProjection`. The projection receives a `ResourceDescriptor` and uses its `Properties` dictionary to extract resource-specific configuration:
 
 ```csharp
-return type switch
+// File: src/Deskribe.Aspire/Projections/MongoDbAspireProjection.cs
+
+using Deskribe.Sdk;
+
+namespace Deskribe.Aspire.Projections;
+
+public sealed class MongoDbAspireProjection : IAspireProjection
 {
-    "postgres"        => JsonSerializer.Deserialize<SdkPostgresResource>(rawJson, innerOptions),
-    "redis"           => JsonSerializer.Deserialize<SdkRedisResource>(rawJson, innerOptions),
-    "kafka.messaging" => JsonSerializer.Deserialize<SdkKafkaResource>(rawJson, innerOptions),
-    "mongodb"         => JsonSerializer.Deserialize<SdkMongoDbResource>(rawJson, innerOptions),  // NEW
-    _ => throw new JsonException($"Unknown resource type: {type}")
-};
-```
+    public string ResourceType => "mongodb";
 
-### Step 3: Add the Aspire Builder Method
-
-Add a new private method to `DeskribeAspireExtensions` following the existing pattern:
-
-```csharp
-private static void AddMongoDbResource(
-    IDistributedApplicationBuilder builder,
-    string appName,
-    SdkMongoDbResource? mongoResource,
-    DeskribeResourceMap map)
-{
-    var serverName = $"{appName}-mongodb";
-    var dbName = mongoResource?.DatabaseName ?? $"{appName}-db";
-
-    // Use the Aspire MongoDB hosting package
-    var server = builder.AddMongoDB(serverName);
-
-    // Derive image tag from the resource's Version property
-    if (mongoResource?.Version is { } version)
-        server = server.WithImageTag(version);
-
-    // Admin tools are always on in local dev
-    server = server.WithMongoExpress();
-
-    // Persistence is always on
-    server = server.WithLifetime(ContainerLifetime.Persistent);
-
-    var db = server.AddDatabase(dbName);
-
-    map.AddConnectionStringResource(db);
-    map.AddWaitForResource(db);
-    map.RegisterResource("mongodb", serverName, dbName);
-}
-```
-
-### Step 4: Add the Case to the Switch in AddDeskribeManifest
-
-```csharp
-foreach (var resource in manifest.Resources)
-{
-    switch (resource.Type)
+    public void Project(
+        IDistributedApplicationBuilder builder,
+        string appName,
+        ResourceDescriptor resource,
+        DeskribeResourceMap map)
     {
-        case "postgres":
-            AddPostgresResource(builder, manifest.Name, resource as SdkPostgresResource, map);
-            break;
-        case "redis":
-            AddRedisResource(builder, manifest.Name, resource as SdkRedisResource, map);
-            break;
-        case "kafka.messaging":
-            AddKafkaResource(builder, manifest.Name, resource as SdkKafkaResource, map);
-            break;
-        case "mongodb":  // NEW
-            AddMongoDbResource(builder, manifest.Name, resource as SdkMongoDbResource, map);
-            break;
+        var serverName = $"{appName}-mongodb";
+
+        // Extract config from the Properties dictionary
+        // ResourceDescriptor uses [JsonExtensionData] so all JSON
+        // properties are captured automatically -- no custom converter needed
+        resource.Properties.TryGetValue("databaseName", out var dbNameObj);
+        var dbName = dbNameObj?.ToString() ?? $"{appName}-db";
+
+        // Use the Aspire MongoDB hosting package
+        var server = builder.AddMongoDB(serverName);
+
+        // Derive image tag from the resource's version property
+        if (resource.Properties.TryGetValue("version", out var v)
+            && v is string version)
+            server = server.WithImageTag(version);
+
+        // Admin tools are always on in local dev
+        server = server.WithMongoExpress();
+
+        // Persistence is always on
+        server = server.WithLifetime(ContainerLifetime.Persistent);
+
+        var db = server.AddDatabase(dbName);
+
+        map.AddConnectionStringResource(db);
+        map.AddWaitForResource(db);
+        map.RegisterResource("mongodb", serverName, dbName);
     }
 }
 ```
 
-### Step 5: Add the NuGet Package
+**Key points:**
+- No `DeskribeResource` subclass needed -- `ResourceDescriptor` handles all types generically.
+- No JSON converter to update -- `[JsonExtensionData]` on `ResourceDescriptor` captures all properties into the `Properties` dictionary automatically.
+- No switch/case to modify -- projections are discovered by their `ResourceType` key.
+
+### Step 2: Register the Projection
+
+Pass your new projection to `AddDeskribeManifest` via the `additionalProjections` parameter:
+
+```csharp
+var resources = builder.AddDeskribeManifest(
+    manifestPath,
+    additionalProjections: [new MongoDbAspireProjection()]);
+```
+
+That is it. The built-in projections (Postgres, Redis, Kafka) are registered automatically. Your custom projection is merged into the lookup and called when a resource with `"type": "mongodb"` is encountered.
+
+### Step 3: Add the NuGet Package
 
 Add the Aspire MongoDB hosting package to `Deskribe.Aspire.csproj`:
 
@@ -519,22 +490,25 @@ Add the Aspire MongoDB hosting package to `Deskribe.Aspire.csproj`:
 <PackageReference Include="Aspire.Hosting.MongoDB" Version="10.0.0" />
 ```
 
-### The Extension Method Pattern
+### The IAspireProjection Pattern
 
-Every resource follows the same pattern:
+Every projection follows the same pattern:
 
 ```
-  1. Create a server resource      builder.Add{Type}(name)
-  2. Apply image tag               .WithImageTag(version)     // if resource has Version
-  3. Apply admin tool              .With{AdminTool}()         // always on
-  4. Apply persistence             .WithLifetime(Persistent)  // always on
-  5. (Optional) Create child       server.AddDatabase(dbName)
-  6. Register in the map           map.AddConnectionStringResource(...)
+  1. Extract config from resource.Properties
+       resource.Properties.TryGetValue("version", out var v)
+       resource.Properties.TryGetValue("databaseName", out var db)
+  2. Create a server resource      builder.Add{Type}(name)
+  3. Apply image tag               .WithImageTag(version)     // if version exists in Properties
+  4. Apply admin tool              .With{AdminTool}()         // always on
+  5. Apply persistence             .WithLifetime(Persistent)  // always on
+  6. (Optional) Create child       server.AddDatabase(dbName)
+  7. Register in the map           map.AddConnectionStringResource(...)
                                    map.AddWaitForResource(...)
                                    map.RegisterResource(type, name, child)
 ```
 
-This pattern makes it straightforward to add support for any new resource that has an Aspire hosting package: RabbitMQ, MySQL, Elasticsearch, Milvus, Qdrant, and so on.
+This pattern makes it straightforward to add support for any new resource that has an Aspire hosting package: RabbitMQ, MySQL, Elasticsearch, Milvus, Qdrant, and so on. Implement `IAspireProjection`, register it, and you are done.
 
 ---
 

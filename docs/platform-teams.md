@@ -42,7 +42,7 @@ they are. Deskribe just gives developers a single JSON file that maps to all of 
               |                     |
               v                     v
      +-----------------+   +-----------------+
-     | IBackendAdapter |   | IRuntimeAdapter |
+     | IProvisioner |   | IRuntimePlugin |
      | (your IaC)      |   | (your runtime)  |
      +-----------------+   +-----------------+
               |                     |
@@ -101,7 +101,7 @@ Platform team's week:
 ```
 Platform team's week:
   Mon   Publish updated base.json with new region policy
-  Tue   Add a custom backend adapter for the new managed Kafka service
+  Tue   Add a custom provisioner for the new managed Kafka service
   Wed   Review one deskribe.json PR: "Looks right, merge it"
   Thu   Platform engineering work --- improving the underlying modules
   Fri   Same
@@ -145,7 +145,7 @@ platform-config/
     "namespacePattern": "{app}-{env}"
   },
 
-  "backends": {
+  "provisioners": {
     "postgres": "pulumi",
     "redis": "pulumi",
     "kafka.messaging": "pulumi"
@@ -163,14 +163,14 @@ Field-by-field breakdown:
 | Field | Type | Purpose |
 |-------|------|---------|
 | `organization` | `string` | Your org name. Used for naming, tagging, and namespace prefixes. |
-| `defaults.runtime` | `string` | Which `IRuntimeAdapter` to use. Maps to adapter `Name` property (e.g., `"kubernetes"`). |
+| `defaults.runtime` | `string` | Which `IRuntimePlugin` to use. Maps to adapter `Name` property (e.g., `"kubernetes"`). |
 | `defaults.region` | `string` | Default cloud region for all resources. |
 | `defaults.replicas` | `int` | Default replica count for workloads. Developers can override per-env. |
 | `defaults.cpu` | `string` | Default CPU request/limit (K8s resource quantity format). |
 | `defaults.memory` | `string` | Default memory request/limit (K8s resource quantity format). |
 | `defaults.namespacePattern` | `string` | Template for K8s namespace. `{app}` and `{env}` are replaced at plan time. |
 | `defaults.ha` | `bool?` | Whether high-availability is enabled. Typically `null` in base (off), `true` in prod. |
-| `backends` | `Dictionary<string, string>` | Maps resource types to backend adapter names. See Section 3. |
+| `backends` | `Dictionary<string, string>` | Maps resource types to provisioner names. See Section 3. |
 | `policies.allowedRegions` | `string[]` | Regions developers are allowed to target. Enforced by `PolicyValidator`. |
 | `policies.enforceTLS` | `bool` | Whether TLS is mandatory for all resources. |
 
@@ -290,13 +290,13 @@ deskribe validate \
 ## 3. Mapping Resources to Backends
 
 The `backends` section in `base.json` is the routing table. It tells Deskribe:
-"When a developer asks for resource type X, use backend adapter Y to provision it."
+"When a developer asks for resource type X, use provisioner Y to provision it."
 
 ### How the mapping works
 
 ```json
 {
-  "backends": {
+  "provisioners": {
     "postgres": "pulumi",
     "redis": "pulumi",
     "kafka.messaging": "pulumi"
@@ -307,7 +307,7 @@ The `backends` section in `base.json` is the routing table. It tells Deskribe:
 Reading this out loud:
 
 - `"postgres": "pulumi"` --- When a developer writes `{ "type": "postgres" }` in their
-  `deskribe.json`, use the **Pulumi backend adapter** to provision it.
+  `deskribe.json`, use the **Pulumi provisioner** to provision it.
 - `"redis": "pulumi"` --- Same for Redis.
 - `"kafka.messaging": "pulumi"` --- Same for Kafka messaging.
 
@@ -317,7 +317,7 @@ You are not limited to one backend. Different resource types can use different I
 
 ```json
 {
-  "backends": {
+  "provisioners": {
     "postgres": "terraform",
     "redis": "pulumi",
     "kafka.messaging": "terraform"
@@ -340,11 +340,11 @@ the backend:
 
 ```
 For each ResourcePlan in the DeskribePlan:
-    1. Look up: platform.Backends[resourcePlan.ResourceType]
+    1. Look up: platform.Provisioners[resourcePlan.ResourceType]
        e.g., "postgres" -> "pulumi"
 
     2. Get the adapter: pluginHost.GetBackendAdapter("pulumi")
-       Returns the registered IBackendAdapter with Name == "pulumi"
+       Returns the registered IProvisioner with Name == "pulumi"
 
     3. Call: backend.ApplyAsync(plan, ct)
        The adapter provisions the resource using its IaC tool
@@ -366,19 +366,19 @@ For each ResourcePlan in the DeskribePlan:
                                  +----------------+         +------------------+
 ```
 
-### Writing a custom backend adapter
+### Writing a custom provisioner
 
-Every backend adapter implements the `IBackendAdapter` interface:
+Every provisioner implements the `IProvisioner` interface:
 
 ```csharp
-public interface IBackendAdapter
+public interface IProvisioner
 {
     string Name { get; }
-    Task<BackendApplyResult> ApplyAsync(DeskribePlan plan, CancellationToken ct = default);
+    Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct = default);
     Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct = default);
 }
 
-public record BackendApplyResult
+public record ProvisionResult
 {
     public bool Success { get; init; }
     public Dictionary<string, Dictionary<string, string>> ResourceOutputs { get; init; } = new();
@@ -393,11 +393,11 @@ public record BackendApplyResult
 To create a custom adapter that wraps your existing Terraform modules:
 
 ```csharp
-public class TerraformBackendAdapter : IBackendAdapter
+public class TerraformBackendAdapter : IProvisioner
 {
     public string Name => "terraform";
 
-    public async Task<BackendApplyResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
+    public async Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
     {
         var outputs = new Dictionary<string, Dictionary<string, string>>();
 
@@ -419,7 +419,7 @@ public class TerraformBackendAdapter : IBackendAdapter
             outputs[resourcePlan.ResourceType] = tfOutputs;
         }
 
-        return new BackendApplyResult { Success = true, ResourceOutputs = outputs };
+        return new ProvisionResult { Success = true, ResourceOutputs = outputs };
     }
 
     public async Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)
@@ -637,7 +637,7 @@ output "port" {
 ### The Terraform adapter translates DeskribePlan to tfvars
 
 ```csharp
-public class TerraformBackendAdapter : IBackendAdapter
+public class TerraformBackendAdapter : IProvisioner
 {
     private readonly string _modulesRoot;
 
@@ -648,7 +648,7 @@ public class TerraformBackendAdapter : IBackendAdapter
 
     public string Name => "terraform";
 
-    public async Task<BackendApplyResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
+    public async Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
     {
         var outputs = new Dictionary<string, Dictionary<string, string>>();
 
@@ -690,7 +690,7 @@ public class TerraformBackendAdapter : IBackendAdapter
             outputs[resourcePlan.ResourceType] = tfOutputs;
         }
 
-        return new BackendApplyResult { Success = true, ResourceOutputs = outputs };
+        return new ProvisionResult { Success = true, ResourceOutputs = outputs };
     }
 
     public async Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)
@@ -716,7 +716,7 @@ public class TerraformBackendAdapter : IBackendAdapter
 
 ```
   Developer writes:                Platform base.json says:
-  { "type": "postgres",           { "backends": {
+  { "type": "postgres",           { "provisioners": {
     "size": "m" }                      "postgres": "terraform" } }
        |                                       |
        v                                       v
@@ -749,7 +749,7 @@ public class TerraformBackendAdapter : IBackendAdapter
        |  5. terraform output -json
        |
        v
-  Returns BackendApplyResult:
+  Returns ProvisionResult:
     ResourceOutputs: {
       "postgres": {
         "connectionString": "Host=payments-api-dev-pg.postgres.database.azure.com;...",
@@ -778,7 +778,7 @@ public class TerraformBackendAdapter : IBackendAdapter
 > The example below shows how to write your **own** adapter pointing to multiple Pulumi program
 > directories. Methods like `MapResourceToProgram()` are private helpers you implement.
 
-The Pulumi backend adapter uses the [Pulumi Automation API](https://www.pulumi.com/docs/using-pulumi/automation-api/)
+The Pulumi provisioner uses the [Pulumi Automation API](https://www.pulumi.com/docs/using-pulumi/automation-api/)
 to call your existing Pulumi programs programmatically. The pattern mirrors Terraform
 but uses `Pulumi.Automation.LocalWorkspace` instead of CLI calls.
 
@@ -808,7 +808,7 @@ but uses `Pulumi.Automation.LocalWorkspace` instead of CLI calls.
 ```csharp
 using Pulumi.Automation;
 
-public class PulumiBackendAdapter : IBackendAdapter
+public class PulumiBackendAdapter : IProvisioner
 {
     private readonly string _programsRoot;
 
@@ -819,7 +819,7 @@ public class PulumiBackendAdapter : IBackendAdapter
 
     public string Name => "pulumi";
 
-    public async Task<BackendApplyResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
+    public async Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
     {
         var outputs = new Dictionary<string, Dictionary<string, string>>();
 
@@ -858,7 +858,7 @@ public class PulumiBackendAdapter : IBackendAdapter
             outputs[resourcePlan.ResourceType] = resourceOutputs;
         }
 
-        return new BackendApplyResult { Success = true, ResourceOutputs = outputs };
+        return new ProvisionResult { Success = true, ResourceOutputs = outputs };
     }
 
     public async Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)
@@ -913,7 +913,7 @@ public class PulumiBackendAdapter : IBackendAdapter
     port             = "5432"
        |
        v
-  Returned as BackendApplyResult.ResourceOutputs["postgres"]
+  Returned as ProvisionResult.ResourceOutputs["postgres"]
 ```
 
 ---
@@ -1075,7 +1075,7 @@ public class ExtendedKubernetesRuntimeAdapter : KubernetesRuntimeAdapter
 ## 7. Runtime Integration --- Azure Container Apps
 
 For organizations using Azure Container Apps instead of Kubernetes, you implement a
-custom `IRuntimeAdapter`.
+custom `IRuntimePlugin`.
 
 ### What a custom Azure Container Apps adapter looks like
 
@@ -1085,7 +1085,7 @@ using Azure.ResourceManager.AppContainers;
 using Azure.ResourceManager.AppContainers.Models;
 using Azure.Identity;
 
-public class AzureContainerAppsRuntimeAdapter : IRuntimeAdapter
+public class AzureContainerAppsRuntimeAdapter : IRuntimePlugin
 {
     private readonly string _subscriptionId;
     private readonly string _resourceGroupName;
@@ -1200,7 +1200,7 @@ Then set the runtime in your platform config:
 ## 8. Runtime Integration --- AWS ECS
 
 For organizations running on AWS Elastic Container Service (ECS), you implement a
-custom `IRuntimeAdapter` using the `AWSSDK.ECS` package.
+custom `IRuntimePlugin` using the `AWSSDK.ECS` package.
 
 ### What a custom AWS ECS adapter looks like
 
@@ -1208,7 +1208,7 @@ custom `IRuntimeAdapter` using the `AWSSDK.ECS` package.
 using Amazon.ECS;
 using Amazon.ECS.Model;
 
-public class AwsEcsRuntimeAdapter : IRuntimeAdapter
+public class AwsEcsRuntimeAdapter : IRuntimePlugin
 {
     private readonly string _clusterName;
     private readonly string _vpcSubnets;
@@ -1362,7 +1362,7 @@ config before any infrastructure is touched.
        |       Error if missing: "Manifest 'name' is required"
        |
        +---> For each resource:
-       |       Does platform.Backends have a mapping for this resource type?
+       |       Does platform.Provisioners have a mapping for this resource type?
        |       Warning if not: "Resource type 'xyz' has no configured backend"
        |
        +---> For each service env var:
@@ -1427,7 +1427,7 @@ if (postgres.Size is not null && !allowedSizes.Contains(postgres.Size))
 if (platform.Policies.EnforceTls)
 {
     // Ensure all connection strings will use SSL
-    // Backend adapters should set sslmode=require in connection strings
+    // Provisioners should set sslmode=require in connection strings
 }
 ```
 
@@ -1472,7 +1472,7 @@ When a developer writes:
 ```
 
 The resource provider (e.g., `PostgresResourceProvider`) maps `"m"` to a concrete SKU
-based on the target backend. This mapping lives inside the backend adapter or resource
+based on the target backend. This mapping lives inside the provisioner or resource
 provider --- NOT in the developer's manifest.
 
 ### Size mapping examples
@@ -1495,12 +1495,12 @@ public class PostgresResourceProvider : IResourceProvider
 {
     public string ResourceType => "postgres";
 
-    public Task<ResourcePlanResult> PlanAsync(DeskribeResource resource, PlanContext ctx, CancellationToken ct)
+    public Task<ResourcePlanResult> PlanAsync(ResourceDescriptor resource, PlanContext ctx, CancellationToken ct)
     {
         var postgres = (PostgresResource)resource;
 
         // Map abstract size to concrete SKU based on backend
-        var backendName = ctx.Platform.Backends.GetValueOrDefault("postgres", "pulumi");
+        var backendName = ctx.Platform.Provisioners.GetValueOrDefault("postgres", "pulumi");
         var sku = MapSizeToSku(postgres.Size ?? "s", backendName, ctx.Environment);
 
         // Determine HA from environment config
@@ -1561,7 +1561,7 @@ public class PostgresResourceProvider : IResourceProvider
 ### Platform teams control the mapping
 
 The size-to-SKU mapping is entirely in platform team code (resource providers and
-backend adapters). Developers never see SKU names. They write `"size": "m"` and the
+provisioners). Developers never see SKU names. They write `"size": "m"` and the
 platform decides what that means for their cloud provider. This is a deliberate design
 choice --- it allows platform teams to change cloud providers or resize tiers without
 any developer changes.
@@ -1610,7 +1610,7 @@ The platform config controls the target per environment:
     "memory": "512Mi",
     "namespacePattern": "{app}-{env}"
   },
-  "backends": {
+  "provisioners": {
     "postgres": "pulumi",
     "redis": "pulumi"
   },
@@ -1636,7 +1636,7 @@ The platform config controls the target per environment:
 }
 ```
 
-Uses the `kubernetes` runtime adapter, deploying to a local kind/minikube/Docker Desktop cluster. Backend adapters use Pulumi to provision resources.
+Uses the `kubernetes` runtime plugin, deploying to a local kind/minikube/Docker Desktop cluster. Provisioners use Pulumi to provision resources.
 
 **`envs/staging.json` --- Azure**
 
@@ -1654,7 +1654,7 @@ Uses the `kubernetes` runtime adapter, deploying to a local kind/minikube/Docker
 }
 ```
 
-Uses the `azure-container-apps` runtime adapter. Backend adapters provision Azure Database for PostgreSQL and Azure Cache for Redis via Terraform.
+Uses the `azure-container-apps` runtime plugin. Provisioners provision Azure Database for PostgreSQL and Azure Cache for Redis via Terraform.
 
 **`envs/prod.json` --- AWS**
 
@@ -1676,7 +1676,7 @@ Uses the `azure-container-apps` runtime adapter. Backend adapters provision Azur
 }
 ```
 
-Uses the `aws-ecs` runtime adapter. Backend adapters provision RDS PostgreSQL and ElastiCache Redis via Terraform.
+Uses the `aws-ecs` runtime plugin. Provisioners provision RDS PostgreSQL and ElastiCache Redis via Terraform.
 
 ### How it works at deploy time
 
@@ -1719,7 +1719,7 @@ Secrets (connection strings, passwords, API keys) flow through Deskribe but are 
 stored in developer manifests.
 
 ```
-  Backend adapter provisions resource
+  Provisioner provisions resource
        |
        v
   Resource outputs captured (e.g., connectionString)
@@ -1728,10 +1728,10 @@ stored in developer manifests.
   ResourceReferenceResolver resolves @resource() expressions
        |   Replaces placeholders with real values
        v
-  Resolved env vars passed to IRuntimeAdapter
+  Resolved env vars passed to IRuntimePlugin
        |
        v
-  Runtime adapter creates K8s Secret / ECS Secret / ACA Secret
+  Runtime plugin creates K8s Secret / ECS Secret / ACA Secret
        |   Secrets are created in the target platform's native secret store
        v
   Workload references the secret via envFrom / secretRef
@@ -1752,7 +1752,7 @@ stored in developer manifests.
 
 This is a **reference**, not a value. The real connection string with the password
 only exists:
-1. In the backend adapter's output (in-memory during apply).
+1. In the provisioner's output (in-memory during apply).
 2. In the target platform's secret store (K8s Secret, AWS Secrets Manager, Azure Key Vault).
 3. In the running application's environment variables.
 
@@ -1760,18 +1760,18 @@ It is never written to disk, never committed to git, never logged.
 
 ### Integration with HashiCorp Vault
 
-For organizations using Vault, the backend adapter can write secrets to Vault
+For organizations using Vault, the provisioner can write secrets to Vault
 instead of (or in addition to) passing them directly:
 
 ```csharp
-public class VaultAwareBackendAdapter : IBackendAdapter
+public class VaultAwareBackendAdapter : IProvisioner
 {
-    private readonly IBackendAdapter _inner;
+    private readonly IProvisioner _inner;
     private readonly IVaultClient _vault;
 
     public string Name => _inner.Name;
 
-    public async Task<BackendApplyResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
+    public async Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
     {
         var result = await _inner.ApplyAsync(plan, ct);
 
@@ -1795,7 +1795,7 @@ public class VaultAwareBackendAdapter : IBackendAdapter
 ### Integration with Azure Key Vault
 
 ```csharp
-// In your custom runtime adapter, read secrets from Key Vault
+// In your custom runtime plugin, read secrets from Key Vault
 // instead of passing them as plain env vars
 
 using Azure.Security.KeyVault.Secrets;
@@ -1826,7 +1826,7 @@ public async Task ApplyAsync(WorkloadManifest manifest, CancellationToken ct)
   |                        | Write deskribe.json               | Access other apps' secrets|
   +------------------------+-----------------------------------+---------------------------+
   | Platform Engineer      | Modify base.json, envs/*.json     | Modify deskribe.json      |
-  |                        | Write backend/runtime adapters    | (that's the dev's file)   |
+  |                        | Write backend/runtime plugins    | (that's the dev's file)   |
   |                        | Define policies                   |                           |
   |                        | Manage the IaC modules/programs   |                           |
   +------------------------+-----------------------------------+---------------------------+
@@ -1965,13 +1965,13 @@ Create one environment file per region in your platform config:
 }
 ```
 
-The `region` field flows through to backend adapters. For Terraform, it becomes the `location`
+The `region` field flows through to provisioners. For Terraform, it becomes the `location`
 variable. For Pulumi, it sets `azure:location` in stack config.
 
 ### How `region` flows to infrastructure
 
 ```
-  envs/prod-us.json                    Backend Adapter
+  envs/prod-us.json                    Provisioner
   +-------------------+                +---------------------------+
   | "region": "eastus2"|  ---merge-->  | plan.Platform             |
   +-------------------+                |   .Defaults.Region        |
@@ -2091,21 +2091,21 @@ The developer's `deskribe.json` is identical for both regions. Only the `--env` 
 
 For platform engineers writing custom adapters, here are the core interfaces:
 
-### IBackendAdapter --- Bridge to your IaC
+### IProvisioner --- Bridge to your IaC
 
 ```csharp
-public interface IBackendAdapter
+public interface IProvisioner
 {
     string Name { get; }
-    Task<BackendApplyResult> ApplyAsync(DeskribePlan plan, CancellationToken ct = default);
+    Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct = default);
     Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct = default);
 }
 ```
 
-### IRuntimeAdapter --- Bridge to your deployment target
+### IRuntimePlugin --- Bridge to your deployment target
 
 ```csharp
-public interface IRuntimeAdapter
+public interface IRuntimePlugin
 {
     string Name { get; }
     Task<WorkloadManifest> RenderAsync(WorkloadPlan workload, CancellationToken ct = default);
@@ -2126,8 +2126,8 @@ public interface IPlugin
 public interface IPluginRegistrar
 {
     void RegisterResourceProvider(IResourceProvider provider);
-    void RegisterBackendAdapter(IBackendAdapter adapter);
-    void RegisterRuntimeAdapter(IRuntimeAdapter adapter);
+    void RegisterBackendAdapter(IProvisioner adapter);
+    void RegisterRuntimeAdapter(IRuntimePlugin adapter);
     void RegisterMessagingProvider(IMessagingProvider provider);
 }
 ```
@@ -2138,8 +2138,8 @@ public interface IPluginRegistrar
 public interface IResourceProvider
 {
     string ResourceType { get; }
-    Task<ValidationResult> ValidateAsync(DeskribeResource resource, ValidationContext ctx, CancellationToken ct = default);
-    Task<ResourcePlanResult> PlanAsync(DeskribeResource resource, PlanContext ctx, CancellationToken ct = default);
+    Task<ValidationResult> ValidateAsync(ResourceDescriptor resource, ValidationContext ctx, CancellationToken ct = default);
+    Task<ResourcePlanResult> PlanAsync(ResourceDescriptor resource, PlanContext ctx, CancellationToken ct = default);
 }
 ```
 

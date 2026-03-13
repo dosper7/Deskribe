@@ -15,6 +15,7 @@ Local developer machine          CI/CD pipeline
 --------------------------       --------------------------
 deskribe validate ...            deskribe validate ...
 deskribe plan ...                deskribe plan ...
+deskribe generate ...            deskribe generate ...
 deskribe apply ...               deskribe apply ...
 ```
 
@@ -25,25 +26,27 @@ This means:
 
 ### The Pipeline Flow
 
-Every Deskribe CI pipeline follows the same four-stage flow:
+Every Deskribe CI pipeline follows the same flow. The GENERATE stage is optional -- use it when you want to produce standalone artifacts (e.g., for GitOps workflows) instead of applying directly:
 
 ```
-  +----------+     +----------+     +------+     +---------+     +-------+
-  |  BUILD   | --> | VALIDATE | --> | PLAN | --> | APPROVE | --> | APPLY |
-  |          |     |          |     |      |     |         |     |       |
-  | dotnet   |     | deskribe |     | desk |     | Manual  |     | desk  |
-  | build    |     | validate |     | plan |     | gate or |     | apply |
-  | dotnet   |     |          |     |      |     | auto    |     |       |
-  | test     |     | Exit 1   |     | Post |     |         |     | Prov. |
-  | docker   |     | = fail   |     | as   |     |         |     | infra |
-  | push     |     | pipeline |     | PR   |     |         |     | + K8s |
-  |          |     |          |     | cmnt |     |         |     |       |
-  +----------+     +----------+     +------+     +---------+     +-------+
-       |                |               |              |              |
-       v                v               v              v              v
-   Container       Policy check     Human-readable   Gate before   Infrastructure
-   image ready     before plan      diff review      production    provisioned +
-                                                                   app deployed
+  +----------+     +----------+     +------+     +----------+     +---------+     +-------+
+  |  BUILD   | --> | VALIDATE | --> | PLAN | --> | GENERATE | --> | APPROVE | --> | APPLY |
+  |          |     |          |     |      |     | optional |     |         |     |       |
+  | dotnet   |     | deskribe |     | desk |     | deskribe |     | Manual  |     | desk  |
+  | build    |     | validate |     | plan |     | generate |     | gate or |     | apply |
+  | dotnet   |     |          |     |      |     |          |     | auto    |     |       |
+  | test     |     | Exit 1   |     | Post |     | Produces |     |         |     | Prov. |
+  | docker   |     | = fail   |     | as   |     | tfvars,  |     |         |     | infra |
+  | push     |     | pipeline |     | PR   |     | helm-val |     |         |     | + K8s |
+  |          |     |          |     | cmnt |     | bindings |     |         |     |       |
+  +----------+     +----------+     +------+     +----------+     +---------+     +-------+
+       |                |               |              |                |              |
+       v                v               v              v                v              v
+   Container       Policy check     Human-readable   terraform.     Gate before   Infrastructure
+   image ready     before plan      diff review      tfvars.json    production    provisioned +
+                                                     helm-values                  app deployed
+                                                     .yaml
+                                                     bindings.json
 ```
 
 **Key principles:**
@@ -51,8 +54,9 @@ Every Deskribe CI pipeline follows the same four-stage flow:
 1. **Build first** -- compile, test, and push the container image before touching infrastructure.
 2. **Validate early** -- catch policy violations before generating a plan. This is cheap and fast.
 3. **Plan for visibility** -- always generate a plan so reviewers can see exactly what will change.
-4. **Gate before apply** -- never apply to production without an approval step (manual or automated).
-5. **Apply atomically** -- apply provisions infrastructure and deploys the workload in one step.
+4. **Generate for GitOps** -- optionally produce `terraform.tfvars.json`, `helm-values.yaml`, and `bindings.json` for review or consumption by external tools (Terraform Cloud, ArgoCD).
+5. **Gate before apply** -- never apply to production without an approval step (manual or automated).
+6. **Apply atomically** -- apply provisions infrastructure and deploys the workload in one step.
 
 ---
 
@@ -273,7 +277,50 @@ jobs:
           retention-days: 30
 
   # ================================================================
-  # Job 4: Apply (requires approval for staging/prod)
+  # Job 4: Generate artifacts (optional -- for GitOps workflows)
+  # ================================================================
+  generate:
+    needs: [build, validate, plan]
+    runs-on: ubuntu-latest
+    env:
+      TARGET_ENV: ${{ github.event.inputs.environment || 'dev' }}
+
+    steps:
+      - name: Checkout application repo
+        uses: actions/checkout@v4
+
+      - name: Checkout platform config
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.PLATFORM_CONFIG_REPO }}
+          path: ${{ env.PLATFORM_CONFIG_PATH }}
+          token: ${{ secrets.PLATFORM_CONFIG_TOKEN }}
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_VERSION }}
+
+      - name: Install Deskribe CLI
+        run: dotnet tool install --global deskribe-cli
+
+      - name: Generate artifacts
+        run: |
+          deskribe generate \
+            -f deskribe.json \
+            --env ${{ env.TARGET_ENV }} \
+            -p ${{ env.PLATFORM_CONFIG_PATH }} \
+            -o ./generated/
+
+      - name: Upload generated artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deskribe-generated-${{ env.TARGET_ENV }}
+          path: ./generated/
+          retention-days: 30
+
+  # ================================================================
+  # Job 5: Apply (requires approval for staging/prod)
   # ================================================================
   apply:
     needs: [build, validate, plan]
@@ -363,6 +410,42 @@ deskribe apply \
   --image api=ghcr.io/acme/payments-api:sha-abc123 \
   --image worker=ghcr.io/acme/payments-worker:sha-abc123
 ```
+
+### GitOps Workflow with `deskribe generate`
+
+The `deskribe generate` command produces standalone artifacts that can be committed to a platform repository and consumed by external tools like Terraform Cloud and ArgoCD. This enables a pull-request-driven GitOps workflow where generated files are reviewed before they take effect.
+
+**The flow:**
+
+```
+Developer edits deskribe.json
+  -> CI runs `deskribe validate` + `deskribe generate`
+  -> PR to platform repo with generated artifacts
+  -> Platform team reviews terraform.tfvars.json + helm-values.yaml
+  -> Merge triggers Terraform Cloud + ArgoCD
+```
+
+**Example command:**
+
+```bash
+deskribe generate \
+  -f deskribe.json \
+  --env prod \
+  -p ./platform-config \
+  -o ./generated/
+```
+
+This produces three files in the output directory:
+
+| File                     | Purpose                                                     |
+|--------------------------|-------------------------------------------------------------|
+| `terraform.tfvars.json`  | Variable values for Terraform to provision infrastructure   |
+| `helm-values.yaml`       | Helm values for ArgoCD or `helm install` to deploy workloads|
+| `bindings.json`          | Connection strings and resource references for the workload |
+
+The `-p` flag (short for `--platform`) points to the platform config directory, and `-o` specifies the output directory for generated artifacts.
+
+In a GitOps pipeline, CI generates these files and opens a PR against the platform repository. The platform team reviews the concrete Terraform and Helm changes before merging. Once merged, Terraform Cloud applies the infrastructure changes and ArgoCD syncs the workload.
 
 ### Matrix Strategy for Multi-Environment Validation
 
@@ -587,7 +670,7 @@ apply:
           --image api=${{ needs.build.outputs.image-tag }}
 ```
 
-**What happens:** After a reviewer approves in the GitHub environment protection rule, Deskribe provisions all declared resources (Postgres, Redis, Kafka, etc.) via the configured backend (Pulumi/Terraform), then deploys the workload to Kubernetes with the correct connection strings injected.
+**What happens:** After a reviewer approves in the GitHub environment protection rule, Deskribe provisions all declared resources (Postgres, Redis, Kafka, etc.) via the configured backend (Pulumi or Terraform), then deploys the workload to Kubernetes with the correct connection strings injected.
 
 ---
 
@@ -753,7 +836,7 @@ Store `PLATFORM_CONFIG_TOKEN` as a repository secret or (better) an organization
 
 ### Infrastructure Backend Credentials
 
-Deskribe delegates infrastructure provisioning to backends like Pulumi or Terraform. These backends need cloud credentials:
+Deskribe delegates infrastructure provisioning to backends like Pulumi or Terraform. Both are supported as provisioners -- choose whichever fits your organization. These backends need cloud credentials:
 
 **For Pulumi:**
 
@@ -817,6 +900,7 @@ steps:
 |----------------------------|-------------------------------------------|---------------|
 | `PLATFORM_CONFIG_TOKEN`    | Clone the platform config repo            | Organization  |
 | `PULUMI_ACCESS_TOKEN`      | Authenticate to Pulumi Cloud              | Organization  |
+| `TF_API_TOKEN`             | Authenticate to Terraform Cloud           | Organization  |
 | `AZURE_CREDENTIALS`        | Azure service principal (or federated ID) | Environment   |
 | `AKS_RESOURCE_GROUP`       | Kubernetes cluster resource group         | Environment   |
 | `AKS_CLUSTER_NAME`         | Kubernetes cluster name                   | Environment   |
@@ -963,7 +1047,7 @@ apply-prod:
 **GitLab-specific notes:**
 - Use GitLab environments with protected environments for approval gates.
 - `when: manual` prevents accidental applies.
-- Store `PLATFORM_CONFIG_TOKEN`, `PULUMI_ACCESS_TOKEN`, and cloud credentials as CI/CD variables (masked and protected).
+- Store `PLATFORM_CONFIG_TOKEN`, `PULUMI_ACCESS_TOKEN` (or `TF_API_TOKEN` for Terraform), and cloud credentials as CI/CD variables (masked and protected).
 - Use YAML anchors (`&validate-template` / `<<: *validate-template`) to keep the file DRY.
 
 ---

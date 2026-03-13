@@ -34,7 +34,7 @@ running in Kubernetes.
   +--------------------+              +---------------------+
   | deskribe.json      |              | base.json           |
   |                    |              |   org defaults      |
-  | "I need postgres,  |              |   backend mappings  |
+  | "I need postgres,  |              |   provisioner maps  |
   |  redis, kafka.     |              |   policies          |
   |  Here are my env   |              |                     |
   |  var refs."        |              | envs/               |
@@ -67,7 +67,7 @@ running in Kubernetes.
               |  +-------+-------+  |
               |          |          |
               |  +-------v-------+  |
-              |  | PluginHost    |  | -- Routes to registered providers
+              |  | PluginRegistry    |  | -- Routes to registered providers
               |  +-------+-------+  |
               |          |          |
               +----------+----------+
@@ -77,7 +77,7 @@ running in Kubernetes.
     +---------v--------+  +---------v---------+
     |  INFRASTRUCTURE  |  |  RUNTIME          |
     |                  |  |                   |
-    |  Backend Adapter |  |  Runtime Adapter  |
+    |  Provisioner |  |  Runtime Plugin  |
     |  (Pulumi)        |  |  (Kubernetes)     |
     |                  |  |                   |
     |  Provisions:     |  |  Deploys:         |
@@ -92,13 +92,13 @@ running in Kubernetes.
 
 | Component | Responsibility | When it runs |
 |---|---|---|
-| **ConfigLoader** | Reads `deskribe.json`, `base.json`, and `envs/{env}.json` from disk. Deserializes JSON into typed C# records. Uses a polymorphic converter to turn `"type": "postgres"` into `PostgresResource`. | First step of every command |
+| **ConfigLoader** | Reads `deskribe.json`, `base.json`, and `envs/{env}.json` from disk. Deserializes JSON into `ResourceDescriptor` records using `[JsonExtensionData]` for type-specific properties -- no polymorphic converter needed. | First step of every command |
 | **MergeEngine** | Takes all three config layers and produces a single `WorkloadPlan`. Platform defaults form the base, environment config overrides those, developer per-env overrides win last. | After loading, before validation |
 | **PolicyValidator** | Checks that the manifest name is set, that all resource types have backends, and that `@resource()` references point to declared resources. | After merging |
 | **ResourceReferenceResolver** | Extracts `@resource(type).property` expressions from env vars using regex. During apply, replaces them with real values from backend outputs. | Validation and Apply phases |
-| **PluginHost** | In-process registry. Plugins register themselves at startup. The engine asks "give me the provider for `postgres`" and gets back `PostgresResourceProvider`. | Startup (registration), every command (lookup) |
-| **Backend Adapter** | Takes a `DeskribePlan` and provisions infrastructure. Pulumi adapter would use Automation API. Returns resource outputs (connection strings, endpoints). | Apply phase |
-| **Runtime Adapter** | Takes a `WorkloadPlan` with resolved env vars. Renders Kubernetes YAML (Namespace + Secret + Deployment + Service). Applies to cluster. | Apply phase, after infra is up |
+| **PluginRegistry** | In-process registry. Plugins register themselves at startup. The engine asks "give me the provider for `postgres`" and gets back `ResourceDescriptorProvider`. | Startup (registration), every command (lookup) |
+| **Provisioner** | Takes a `DeskribePlan` and provisions infrastructure. Pulumi adapter would use Automation API. Returns resource outputs (connection strings, endpoints). | Apply phase |
+| **Runtime Plugin** | Takes a `WorkloadPlan` with resolved env vars. Renders Kubernetes YAML (Namespace + Secret + Deployment + Service). Applies to cluster. | Apply phase, after infra is up |
 
 ---
 
@@ -120,7 +120,7 @@ The manifest is the developer's single file. Everything starts here.
   // Deskribe finds the right plugin for each "type".
   "resources": [
     {
-      "type": "postgres",          // Matched to PostgresResourceProvider
+      "type": "postgres",          // Matched to ResourceDescriptorProvider
       "size": "m",                 // Provider-specific: xs, s, m, l, xl
       "version": "16"             // Used by both prod (Azure DB v16) and local dev (image tag)
     },
@@ -413,7 +413,7 @@ var ns = platform.Defaults.NamespacePattern
 
 Plugins are how Deskribe stays extensible. Each infrastructure concern
 (Postgres, Redis, Kafka, Pulumi, Kubernetes) is a separate plugin that
-registers with the PluginHost at startup.
+registers with the PluginRegistry at startup.
 
 ### Plugin Host and Registration
 
@@ -443,8 +443,8 @@ registers with the PluginHost at startup.
   |                    (IPluginRegistrar)                           |
   |                                                                |
   |  _resourceProviders:                                           |
-  |    "postgres"         --> PostgresResourceProvider              |
-  |    "redis"            --> RedisResourceProvider                 |
+  |    "postgres"         --> ResourceDescriptorProvider              |
+  |    "redis"            --> ResourceDescriptorProvider                 |
   |    "kafka.messaging"  --> KafkaResourceProvider                 |
   |                                                                |
   |  _backendAdapters:                                             |
@@ -472,12 +472,12 @@ registers with the PluginHost at startup.
       |     ValidateAsync(resource, ctx)
       |     PlanAsync(resource, ctx)
       |
-      +-- IBackendAdapter              -- Provisions/destroys infra
+      +-- IProvisioner              -- Provisions/destroys infra
       |     Name: string               -- "pulumi", "terraform"
       |     ApplyAsync(plan)           -- Returns resource outputs
       |     DestroyAsync(app, env, platform)
       |
-      +-- IRuntimeAdapter              -- Deploys workloads
+      +-- IRuntimePlugin              -- Deploys workloads
       |     Name: string               -- "kubernetes", "ecs"
       |     RenderAsync(workload)      -- Returns YAML/manifest
       |     ApplyAsync(manifest)       -- Deploys to cluster
@@ -495,12 +495,12 @@ At startup, `Program.cs` creates each plugin and calls `RegisterPlugin()`:
 
 ```csharp
 // CLI startup -- Program.cs
-var pluginHost = serviceProvider.GetRequiredService<PluginHost>();
+var pluginHost = serviceProvider.GetRequiredService<PluginRegistry>();
 pluginHost.RegisterPlugin(new PostgresPlugin());    // registers IResourceProvider
 pluginHost.RegisterPlugin(new RedisPlugin());       // registers IResourceProvider
 pluginHost.RegisterPlugin(new KafkaPlugin());       // registers IResourceProvider + IMessagingProvider
-pluginHost.RegisterPlugin(new PulumiPlugin());      // registers IBackendAdapter
-pluginHost.RegisterPlugin(new KubernetesPlugin());  // registers IRuntimeAdapter
+pluginHost.RegisterPlugin(new PulumiPlugin());      // registers IProvisioner
+pluginHost.RegisterPlugin(new KubernetesPlugin());  // registers IRuntimePlugin
 ```
 
 Each plugin's `Register` method decides what to register:
@@ -513,7 +513,7 @@ public class PostgresPlugin : IPlugin
 
     public void Register(IPluginRegistrar registrar)
     {
-        registrar.RegisterResourceProvider(new PostgresResourceProvider());
+        registrar.RegisterResourceProvider(new ResourceDescriptorProvider());
     }
 }
 
@@ -530,12 +530,12 @@ public class KafkaPlugin : IPlugin
 }
 ```
 
-When the engine processes a resource, it asks the PluginHost:
+When the engine processes a resource, it asks the PluginRegistry:
 
 ```
   Engine: "I have a resource with type = 'postgres'. Who handles it?"
-  PluginHost: looks up _resourceProviders["postgres"]
-  PluginHost: returns PostgresResourceProvider
+  PluginRegistry: looks up _resourceProviders["postgres"]
+  PluginRegistry: returns ResourceDescriptorProvider
   Engine: calls provider.ValidateAsync() or provider.PlanAsync()
 ```
 
@@ -544,20 +544,20 @@ When the engine processes a resource, it asks the PluginHost:
 ```
   Phase 1: REGISTER (startup)
   ============================
-  Plugin.Register(registrar)  -->  PluginHost stores provider in dictionary
+  Plugin.Register(registrar)  -->  PluginRegistry stores provider in dictionary
   This happens once at application startup.
 
   Phase 2: VALIDATE (deskribe validate)
   =====================================
   For each resource in manifest:
-    provider = PluginHost.GetResourceProvider(resource.Type)
+    provider = PluginRegistry.GetResourceProvider(resource.Type)
     result = provider.ValidateAsync(resource, validationContext)
     if (!result.IsValid) --> collect errors
 
   Phase 3: PLAN (deskribe plan)
   =============================
   For each resource in manifest:
-    provider = PluginHost.GetResourceProvider(resource.Type)
+    provider = PluginRegistry.GetResourceProvider(resource.Type)
     plan = provider.PlanAsync(resource, planContext)
     --> Returns ResourcePlanResult with:
         - Action: "create" | "update" | "no-change"
@@ -568,13 +568,13 @@ When the engine processes a resource, it asks the PluginHost:
   ===============================
   For each resource plan:
     backendName = platform.Backends[resource.Type]    // "pulumi"
-    backend = PluginHost.GetBackendAdapter(backendName)
+    backend = PluginRegistry.GetBackendAdapter(backendName)
     result = backend.ApplyAsync(plan)
-    --> Returns BackendApplyResult with actual resource outputs
+    --> Returns ProvisionResult with actual resource outputs
 
   Then:
     runtimeName = platform.Defaults.Runtime           // "kubernetes"
-    runtime = PluginHost.GetRuntimeAdapter(runtimeName)
+    runtime = PluginRegistry.GetRuntimeAdapter(runtimeName)
     manifest = runtime.RenderAsync(workloadWithResolvedEnv)
     runtime.ApplyAsync(manifest)
 ```
@@ -642,7 +642,7 @@ The resolver checks that `"postgres"` exists in the manifest's declared resource
 
 **Step 3: Planning (during `deskribe plan`)**
 
-The PostgresResourceProvider generates planned outputs:
+The ResourceDescriptorProvider generates planned outputs:
 
 ```
 ResourcePlanResult {
@@ -760,7 +760,7 @@ The `DeskribeEngine` orchestrates the entire flow. Every CLI command
   |  STAGE 3: VALIDATE (runs on each resource via its provider)               |
   |  +-------------------------------------------------------------------+   |
   |  |  For each resource in manifest.Resources:                         |   |
-  |  |    provider = PluginHost.GetResourceProvider(resource.Type)        |   |
+  |  |    provider = PluginRegistry.GetResourceProvider(resource.Type)        |   |
   |  |    result = provider.ValidateAsync(resource, context)             |   |
   |  |                                                                   |   |
   |  |  Also: PolicyValidator checks manifest-level rules                |   |
@@ -772,7 +772,7 @@ The `DeskribeEngine` orchestrates the entire flow. Every CLI command
   |  STAGE 4: PLAN (runs on each resource via its provider)                   |
   |  +-------------------------------------------------------------------+   |
   |  |  For each resource in manifest.Resources:                         |   |
-  |  |    provider = PluginHost.GetResourceProvider(resource.Type)        |   |
+  |  |    provider = PluginRegistry.GetResourceProvider(resource.Type)        |   |
   |  |    plan = provider.PlanAsync(resource, planContext)                |   |
   |  |                                                                   |   |
   |  |  Output: DeskribePlan {                                           |   |
@@ -781,11 +781,11 @@ The `DeskribeEngine` orchestrates the entire flow. Every CLI command
   |  |  }                                                                |   |
   |  +-------------------------------------------------------------------+   |
   |                                                                           |
-  |  STAGE 5: APPLY INFRASTRUCTURE (via backend adapters)                     |
+  |  STAGE 5: APPLY INFRASTRUCTURE (via provisioners)                     |
   |  +-------------------------------------------------------------------+   |
   |  |  For each resourcePlan in plan.ResourcePlans:                     |   |
   |  |    backendName = platform.Backends[resourcePlan.ResourceType]      |   |
-  |  |    backend = PluginHost.GetBackendAdapter(backendName)            |   |
+  |  |    backend = PluginRegistry.GetBackendAdapter(backendName)            |   |
   |  |    result = backend.ApplyAsync(plan)                              |   |
   |  |                                                                   |   |
   |  |  Collects: resourceOutputs["postgres"]["connectionString"] = ...  |   |
@@ -802,10 +802,10 @@ The `DeskribeEngine` orchestrates the entire flow. Every CLI command
   |  |    --> "Host=10.0.1.5;Port=5432;Database=payments-api;..."        |   |
   |  +-------------------------------------------------------------------+   |
   |                                                                           |
-  |  STAGE 7: DEPLOY (via runtime adapter)                                    |
+  |  STAGE 7: DEPLOY (via runtime plugin)                                    |
   |  +-------------------------------------------------------------------+   |
   |  |  runtimeName = platform.Defaults.Runtime  // "kubernetes"         |   |
-  |  |  runtime = PluginHost.GetRuntimeAdapter(runtimeName)              |   |
+  |  |  runtime = PluginRegistry.GetRuntimeAdapter(runtimeName)              |   |
   |  |                                                                   |   |
   |  |  manifest = runtime.RenderAsync(resolvedWorkload)                 |   |
   |  |    --> Generates: Namespace, Secret, Deployment, Service YAML     |   |
@@ -876,8 +876,8 @@ public interface IPlugin
 public interface IPluginRegistrar
 {
     void RegisterResourceProvider(IResourceProvider provider);
-    void RegisterBackendAdapter(IBackendAdapter adapter);
-    void RegisterRuntimeAdapter(IRuntimeAdapter adapter);
+    void RegisterBackendAdapter(IProvisioner adapter);
+    void RegisterRuntimeAdapter(IRuntimePlugin adapter);
     void RegisterMessagingProvider(IMessagingProvider provider);
 }
 
@@ -885,26 +885,26 @@ public interface IPluginRegistrar
 public interface IResourceProvider
 {
     string ResourceType { get; }
-    Task<ValidationResult> ValidateAsync(DeskribeResource resource,
+    Task<ValidationResult> ValidateAsync(ResourceDescriptor resource,
                                           ValidationContext ctx, CancellationToken ct);
-    Task<ResourcePlanResult> PlanAsync(DeskribeResource resource,
+    Task<ResourcePlanResult> PlanAsync(ResourceDescriptor resource,
                                         PlanContext ctx, CancellationToken ct);
 }
 
 // Provisions infrastructure (Pulumi, Terraform, etc.)
-public interface IBackendAdapter
+public interface IProvisioner
 {
     string Name { get; }
-    Task<BackendApplyResult> ApplyAsync(DeskribePlan plan, CancellationToken ct);
+    Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct);
     Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct);
 }
 
 // Deploys workloads (Kubernetes, ECS, etc.)
-public interface IRuntimeAdapter
+public interface IRuntimePlugin
 {
     string Name { get; }
-    Task<WorkloadManifest> RenderAsync(WorkloadPlan workload, CancellationToken ct);
-    Task ApplyAsync(WorkloadManifest manifest, CancellationToken ct);
+    Task<RuntimeArtifact> RenderAsync(WorkloadPlan workload, CancellationToken ct);
+    Task ApplyAsync(RuntimeArtifact manifest, CancellationToken ct);
     Task DestroyAsync(string namespaceName, CancellationToken ct);
 }
 
@@ -912,9 +912,9 @@ public interface IRuntimeAdapter
 public interface IMessagingProvider
 {
     string ProviderType { get; }
-    Task<ValidationResult> ValidateAsync(KafkaMessagingResource resource,
+    Task<ValidationResult> ValidateAsync(ResourceDescriptor resource,
                                           ValidationContext ctx, CancellationToken ct);
-    Task<ResourcePlanResult> PlanAsync(KafkaMessagingResource resource,
+    Task<ResourcePlanResult> PlanAsync(ResourceDescriptor resource,
                                         PlanContext ctx, CancellationToken ct);
 }
 ```
@@ -923,28 +923,28 @@ public interface IMessagingProvider
 
 ```csharp
 // Base class -- all resources have a type and optional size
-public abstract record DeskribeResource
+public abstract record ResourceDescriptor
 {
     public required string Type { get; init; }
     public string? Size { get; init; }
 }
 
 // Type-specific resources extend the base
-public sealed record PostgresResource : DeskribeResource
+public sealed record ResourceDescriptor : ResourceDescriptor
 {
     public string? Version { get; init; }        // "14", "15", "16", "17"
     public bool? Ha { get; init; }               // high availability
     public string? Sku { get; init; }            // cloud-specific SKU
 }
 
-public sealed record RedisResource : DeskribeResource
+public sealed record ResourceDescriptor : ResourceDescriptor
 {
     public string? Version { get; init; }
     public bool? Ha { get; init; }
     public int? MaxMemoryMb { get; init; }
 }
 
-public sealed record KafkaMessagingResource : DeskribeResource
+public sealed record ResourceDescriptor : ResourceDescriptor
 {
     public List<KafkaTopic> Topics { get; init; } = [];
 }
@@ -966,7 +966,7 @@ public sealed record KafkaTopic
 public sealed record DeskribeManifest
 {
     public required string Name { get; init; }
-    public List<DeskribeResource> Resources { get; init; } = [];
+    public List<ResourceDescriptor> Resources { get; init; } = [];
     public List<ServiceDefinition> Services { get; init; } = [];
 }
 
@@ -1026,9 +1026,9 @@ class does and how they connect.
   |    --> Reads file, deserializes with             |
   |        ResourceJsonConverter                     |
   |    --> Converter checks "type" field:            |
-  |        "postgres"        -> PostgresResource     |
-  |        "redis"           -> RedisResource        |
-  |        "kafka.messaging" -> KafkaMessagingResource|
+  |        "postgres"        -> ResourceDescriptor     |
+  |        "redis"           -> ResourceDescriptor        |
+  |        "kafka.messaging" -> ResourceDescriptor|
   |        anything else     -> JsonException        |
   |    --> Returns DeskribeManifest                   |
   |                                                  |
@@ -1090,14 +1090,14 @@ class does and how they connect.
        declared resource (fails if not)
 ```
 
-**PluginHost** -- In-process plugin registry:
+**PluginRegistry** -- In-process plugin registry:
 
 ```
   Implements IPluginRegistrar.
   Four dictionaries keyed by name/type:
     _resourceProviders:  Dict<string, IResourceProvider>
-    _backendAdapters:    Dict<string, IBackendAdapter>
-    _runtimeAdapters:    Dict<string, IRuntimeAdapter>
+    _backendAdapters:    Dict<string, IProvisioner>
+    _runtimeAdapters:    Dict<string, IRuntimePlugin>
     _messagingProviders: Dict<string, IMessagingProvider>
 
   RegisterPlugin(IPlugin) --> calls plugin.Register(this)
@@ -1197,7 +1197,7 @@ class does and how they connect.
         consumers --> READ permission
 ```
 
-**Pulumi Backend Adapter**:
+**Pulumi Provisioner**:
 
 ```
   Name: "pulumi"
@@ -1216,7 +1216,7 @@ class does and how they connect.
     - Removes the stack from the workspace
 ```
 
-**Kubernetes Runtime Adapter**:
+**Kubernetes Runtime Plugin**:
 
 ```
   Name: "kubernetes"
@@ -1302,7 +1302,7 @@ with zero Docker Compose.
        |       .WithLifetime(Persistent)       <-- always on in local dev
        |       .AddDatabase("{app}-db")
        |       |
-       |       +---> Registers in DeskribeResourceMap
+       |       +---> Registers in ResourceDescriptorMap
        |
        +---> type = "redis"
        |       |
@@ -1311,7 +1311,7 @@ with zero Docker Compose.
        |       .WithRedisInsight()
        |       .WithLifetime(Persistent)
        |       |
-       |       +---> Registers in DeskribeResourceMap
+       |       +---> Registers in ResourceDescriptorMap
        |
        +---> type = "kafka.messaging"
                |
@@ -1320,14 +1320,14 @@ with zero Docker Compose.
                .WithKafkaUI()
                .WithLifetime(Persistent)
                |
-               +---> Registers in DeskribeResourceMap
+               +---> Registers in ResourceDescriptorMap
        |
        v
-  Returns DeskribeResourceMap
+  Returns ResourceDescriptorMap
        |
        v
   builder.AddProject<Projects.MyService>("my-service")
-    .WithDeskribeResources(resources)
+    .WithResourceDescriptors(resources)
        |
        |  For each resource in map:
        |    .WithReference(resource)     <-- injects connection string
@@ -1356,7 +1356,7 @@ var resources = builder.AddDeskribeManifest(manifestPath);
 
 // Wire web dashboard with all resources
 var web = builder.AddProject<Projects.Deskribe_Web>("deskribe-web")
-    .WithDeskribeResources(resources)
+    .WithResourceDescriptors(resources)
     .WithExternalHttpEndpoints();
 
 builder.Build().Run();
@@ -1420,9 +1420,9 @@ ConfigLoader reads three files:
       {
         Name: "payments-api",
         Resources: [
-          PostgresResource { Type: "postgres", Size: "m" },
-          RedisResource { Type: "redis" },
-          KafkaMessagingResource { Type: "kafka.messaging",
+          ResourceDescriptor { Type: "postgres", Size: "m" },
+          ResourceDescriptor { Type: "redis" },
+          ResourceDescriptor { Type: "kafka.messaging",
             Topics: [{ Name: "payments.transactions", Partitions: 6, ... }] }
         ],
         Services: [{
@@ -1490,7 +1490,7 @@ STEP 4: PLAN RESOURCES
 ======================
 For each resource, the engine calls the provider's PlanAsync:
 
-  (a) PostgresResourceProvider.PlanAsync():
+  (a) ResourceDescriptorProvider.PlanAsync():
       ResourcePlanResult {
         ResourceType: "postgres"
         Action: "create"
@@ -1509,7 +1509,7 @@ For each resource, the engine calls the provider's PlanAsync:
         }
       }
 
-  (b) RedisResourceProvider.PlanAsync():
+  (b) ResourceDescriptorProvider.PlanAsync():
       ResourcePlanResult {
         ResourceType: "redis"
         Action: "create"
@@ -1548,7 +1548,7 @@ STEP 5: APPLY INFRASTRUCTURE
 For each resource plan, the engine looks up the backend and calls ApplyAsync:
 
   platform.Backends["postgres"] = "pulumi"
-  backend = PluginHost.GetBackendAdapter("pulumi") --> PulumiBackendAdapter
+  backend = PluginRegistry.GetBackendAdapter("pulumi") --> PulumiBackendAdapter
 
   PulumiBackendAdapter.ApplyAsync(plan):
     [Pulumi] Using Local Program mode with project: infra/
@@ -1556,7 +1556,7 @@ For each resource plan, the engine looks up the backend and calls ApplyAsync:
     ... (Pulumi provisions Azure resources: Resource Group, PostgreSQL, Redis, etc.)
     [Pulumi] Stack update complete: succeeded
 
-  Returns BackendApplyResult with real resource outputs:
+  Returns ProvisionResult with real resource outputs:
     resourceOutputs = {
       "postgres": {
         "connectionString": "Host=pg-payments-api-prod.postgres.database.azure.com;Port=5432;...",

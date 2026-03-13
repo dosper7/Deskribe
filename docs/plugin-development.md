@@ -35,7 +35,7 @@ hand over its providers and adapters.
        ^          ^           ^
        |          |           |
  +------------------------------------------+
- |     PluginHost (implements IPluginRegistrar)    |
+ |     PluginRegistry (implements IPluginRegistrar)    |
  |  Stores providers/adapters in dictionaries      |
  |  Engine looks them up by string key             |
  +------------------------------------------+
@@ -45,7 +45,7 @@ hand over its providers and adapters.
 
 ```csharp
 // In Program.cs — the engine asks each plugin to register itself
-var pluginHost = serviceProvider.GetRequiredService<PluginHost>();
+var pluginHost = serviceProvider.GetRequiredService<PluginRegistry>();
 pluginHost.RegisterPlugin(new MongoDbPlugin());   // your new plugin
 ```
 
@@ -248,16 +248,16 @@ pluginHost.RegisterPlugin(new MongoDbPlugin());
 
 ---
 
-## 3. Creating a Backend Adapter (Step-by-Step)
+## 3. Creating a Provisioner (Step-by-Step)
 
-Backend adapters turn resource plans into real infrastructure. The built-in Pulumi
-adapter uses the Pulumi Automation API. Here is a **Terraform backend adapter** that
+Provisioners turn resource plans into real infrastructure. The built-in Pulumi
+provisioner uses the Pulumi Automation API. Here is a **Terraform provisioner** that
 shells out to the `terraform` CLI instead.
 
-### 3.1 The Adapter
+### 3.1 The Provisioner
 
 ```csharp
-// TerraformBackendAdapter.cs
+// TerraformProvisioner.cs
 using System.Diagnostics;
 using System.Text.Json;
 using Deskribe.Sdk;
@@ -265,11 +265,11 @@ using Deskribe.Sdk.Models;
 
 namespace Deskribe.Plugins.Backend.Terraform;
 
-public class TerraformBackendAdapter : IBackendAdapter
+public class TerraformBackendAdapter : IProvisioner
 {
     public string Name => "terraform";
 
-    public async Task<BackendApplyResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
+    public async Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
     {
         var outputs = new Dictionary<string, Dictionary<string, string>>();
         var errors = new List<string>();
@@ -289,7 +289,7 @@ public class TerraformBackendAdapter : IBackendAdapter
         if (initResult.ExitCode != 0)
         {
             errors.Add($"terraform init failed: {initResult.StdErr}");
-            return new BackendApplyResult { Success = false, Errors = errors };
+            return new ProvisionResult { Success = false, Errors = errors };
         }
 
         // terraform apply -auto-approve
@@ -297,7 +297,7 @@ public class TerraformBackendAdapter : IBackendAdapter
         if (applyResult.ExitCode != 0)
         {
             errors.Add($"terraform apply failed: {applyResult.StdErr}");
-            return new BackendApplyResult { Success = false, Errors = errors };
+            return new ProvisionResult { Success = false, Errors = errors };
         }
 
         // Collect outputs from the plan (real implementation would parse terraform output -json)
@@ -306,7 +306,7 @@ public class TerraformBackendAdapter : IBackendAdapter
             outputs[resourcePlan.ResourceType] = resourcePlan.PlannedOutputs;
         }
 
-        return new BackendApplyResult { Success = true, ResourceOutputs = outputs };
+        return new ProvisionResult { Success = true, ResourceOutputs = outputs };
     }
 
     public async Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)
@@ -393,7 +393,7 @@ public class TerraformPlugin : IPlugin
 
     public void Register(IPluginRegistrar registrar)
     {
-        registrar.RegisterBackendAdapter(new TerraformBackendAdapter());
+        registrar.RegisterProvisioner(new TerraformBackendAdapter());
     }
 }
 ```
@@ -456,11 +456,11 @@ using Deskribe.Sdk;
 
 namespace Deskribe.Plugins.Runtime.Aca;
 
-public class AcaRuntimeAdapter : IRuntimeAdapter
+public class AcaRuntimeAdapter : IRuntimePlugin
 {
     public string Name => "aca";
 
-    public Task<WorkloadManifest> RenderAsync(WorkloadPlan workload, CancellationToken ct = default)
+    public Task<RuntimeArtifact> RenderAsync(WorkloadPlan workload, CancellationToken ct = default)
     {
         // Build an ARM / Bicep-compatible JSON spec for a Container App
         var containerApp = new
@@ -507,7 +507,7 @@ public class AcaRuntimeAdapter : IRuntimeAdapter
 
         var yaml = JsonSerializer.Serialize(containerApp, new JsonSerializerOptions { WriteIndented = true });
 
-        return Task.FromResult(new WorkloadManifest
+        return Task.FromResult(new RuntimeArtifact
         {
             Namespace = workload.Namespace,
             Yaml = yaml,
@@ -515,7 +515,7 @@ public class AcaRuntimeAdapter : IRuntimeAdapter
         });
     }
 
-    public async Task ApplyAsync(WorkloadManifest manifest, CancellationToken ct = default)
+    public async Task ApplyAsync(RuntimeArtifact manifest, CancellationToken ct = default)
     {
         // In production: use Azure.ResourceManager SDK to deploy.
         // Here we show the intent.
@@ -560,7 +560,7 @@ public class AcaPlugin : IPlugin
 
     public void Register(IPluginRegistrar registrar)
     {
-        registrar.RegisterRuntimeAdapter(new AcaRuntimeAdapter());
+        registrar.RegisterRuntimePlugin(new AcaRuntimeAdapter());
     }
 }
 ```
@@ -569,7 +569,7 @@ public class AcaPlugin : IPlugin
 
 1. **RenderAsync** -- takes a `WorkloadPlan` (app name, replicas, CPU, memory,
    environment variables with resolved `@resource()` references) and produces a
-   `WorkloadManifest` containing the deployment spec.
+   `RuntimeArtifact` containing the deployment spec.
 
 2. **ApplyAsync** -- takes the rendered manifest and pushes it to the target
    platform. The Kubernetes adapter uses the `KubernetesClient` C# SDK to create
@@ -1007,7 +1007,7 @@ public class MongoDbProviderTests
         Platform = new PlatformConfig
         {
             Defaults = new PlatformDefaults { NamespacePattern = "{app}-{env}" },
-            Backends = new Dictionary<string, string> { ["mongodb"] = "pulumi" }
+            Provisioners = new Dictionary<string, string> { ["mongodb"] = "pulumi" }
         },
         Environment = "dev"
     };
@@ -1017,7 +1017,7 @@ public class MongoDbProviderTests
         Platform = new PlatformConfig
         {
             Defaults = new PlatformDefaults { NamespacePattern = "{app}-{env}" },
-            Backends = new Dictionary<string, string> { ["mongodb"] = "pulumi" }
+            Provisioners = new Dictionary<string, string> { ["mongodb"] = "pulumi" }
         },
         EnvironmentConfig = new EnvironmentConfig { Name = "dev" },
         Environment = "dev",
@@ -1178,15 +1178,15 @@ Also add a `<ProjectReference>` to `Deskribe.Cli.csproj`:
 ### 9.2 Web Project (Program.cs)
 
 In `src/Deskribe.Web/Program.cs`, the same pattern applies inside the
-`PluginHost` factory lambda:
+`PluginRegistry` factory lambda:
 
 ```csharp
 using Deskribe.Plugins.Resources.MongoDB;
 
-// Inside the PluginHost singleton registration:
-builder.Services.AddSingleton<PluginHost>(sp =>
+// Inside the PluginRegistry singleton registration:
+builder.Services.AddSingleton<PluginRegistry>(sp =>
 {
-    var host = new PluginHost(sp.GetRequiredService<ILogger<PluginHost>>());
+    var host = new PluginRegistry(sp.GetRequiredService<ILogger<PluginRegistry>>());
     host.RegisterPlugin(new PostgresPlugin());
     host.RegisterPlugin(new RedisPlugin());
     host.RegisterPlugin(new KafkaPlugin());
@@ -1240,8 +1240,8 @@ dotnet sln Deskribe.slnx add src/Plugins/Resources/MongoDB/Deskribe.Plugins.Reso
 |----------------------|------------------|--------------------------------------------------|------------------------------|
 | `IPlugin`            | `Name`           | `Register(IPluginRegistrar)`                     | Entry point for all plugins  |
 | `IResourceProvider`  | `ResourceType`   | `ValidateAsync`, `PlanAsync`                     | Validating and planning infra|
-| `IBackendAdapter`    | `Name`           | `ApplyAsync`, `DestroyAsync`                     | Provisioning infra via IaC   |
-| `IRuntimeAdapter`    | `Name`           | `RenderAsync`, `ApplyAsync`, `DestroyAsync`      | Deploying workloads          |
+| `IProvisioner`    | `Name`           | `ApplyAsync`, `DestroyAsync`                     | Provisioning infra via IaC   |
+| `IRuntimePlugin`    | `Name`           | `RenderAsync`, `ApplyAsync`, `DestroyAsync`      | Deploying workloads          |
 | `IMessagingProvider`  | `ProviderType`   | `ValidateAsync`, `PlanAsync`                     | Messaging-specific policies  |
 
 ---
@@ -1250,7 +1250,7 @@ dotnet sln Deskribe.slnx add src/Plugins/Resources/MongoDB/Deskribe.Plugins.Reso
 
 1. Create the resource record in `Deskribe.Sdk/Resources/` (if it is a new resource type).
 2. Create the plugin project under `src/Plugins/`.
-3. Implement `IResourceProvider`, `IBackendAdapter`, or `IRuntimeAdapter`.
+3. Implement `IResourceProvider`, `IProvisioner`, or `IRuntimePlugin`.
 4. Implement `IPlugin` to register your providers/adapters.
 5. Add the JSON deserialization case to `ConfigLoader` and the Aspire converter.
 6. Register the plugin in both `Deskribe.Cli/Program.cs` and `Deskribe.Web/Program.cs`.
