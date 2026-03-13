@@ -612,83 +612,68 @@ is required -- the plugin will throw if no cluster is available.
 
 ---
 
-## 5. Creating a Messaging Provider (Step-by-Step)
+## 5. Creating a Messaging Resource Provider (Step-by-Step)
 
-Messaging providers handle validation and ACL planning for message-oriented
-resources. The built-in `KafkaMessagingProvider` validates topic configuration
-and generates ACL entries. Here is a **RabbitMQ messaging provider**.
+There is no longer a separate `IMessagingProvider` interface. Messaging resources
+(Kafka, RabbitMQ, etc.) are handled by standard `IResourceProvider` implementations.
+The built-in Kafka plugin registers an `IResourceProvider` that validates topic
+configuration and generates ACL entries. Here is a **RabbitMQ resource provider**
+that follows the same pattern.
 
-### 5.1 Define the Resource Record
+### 5.1 The Resource Provider
 
-```csharp
-// RabbitMqMessagingResource.cs
-namespace Deskribe.Sdk.Resources;
-
-public sealed record RabbitMqMessagingResource : ResourceDescriptor
-{
-    public List<RabbitMqQueue> Queues { get; init; } = [];
-    public List<RabbitMqExchange> Exchanges { get; init; } = [];
-}
-
-public sealed record RabbitMqQueue
-{
-    public required string Name { get; init; }
-    public bool Durable { get; init; } = true;
-    public int? MessageTtlMs { get; init; }
-    public string? DeadLetterExchange { get; init; }
-    public List<string> Producers { get; init; } = [];
-    public List<string> Consumers { get; init; } = [];
-}
-
-public sealed record RabbitMqExchange
-{
-    public required string Name { get; init; }
-    public string ExchangeType { get; init; } = "topic";
-    public List<string> BoundQueues { get; init; } = [];
-}
-```
-
-### 5.2 The Resource Provider (validates structure, plans Helm release)
+Messaging-specific properties (queues, exchanges, ACLs) are stored in the
+`ResourceDescriptor.Properties` dictionary, just like any other resource.
 
 ```csharp
 // RabbitMqResourceProvider.cs
 using Deskribe.Sdk;
 using Deskribe.Sdk.Models;
-using Deskribe.Sdk.Resources;
+using System.Text.Json;
 
 namespace Deskribe.Plugins.Resources.RabbitMQ;
 
+[DeskribePlugin("rabbitmq")]
 public class RabbitMqResourceProvider : IResourceProvider
 {
     public string ResourceType => "rabbitmq.messaging";
 
+    public ResourceSchema GetSchema() => new()
+    {
+        Properties =
+        {
+            ["queues"] = new SchemaProperty { Type = "array", Description = "Queue definitions" },
+            ["exchanges"] = new SchemaProperty { Type = "array", Description = "Exchange definitions" }
+        }
+    };
+
     public Task<ValidationResult> ValidateAsync(
         ResourceDescriptor resource, ValidationContext ctx, CancellationToken ct)
     {
-        if (resource is not RabbitMqMessagingResource rmq)
-            return Task.FromResult(
-                ValidationResult.Invalid($"Expected RabbitMqMessagingResource but got {resource.GetType().Name}"));
-
         var errors = new List<string>();
 
-        if (rmq.Queues.Count == 0 && rmq.Exchanges.Count == 0)
+        var queues = GetListProperty(resource, "queues");
+        var exchanges = GetListProperty(resource, "exchanges");
+
+        if (queues.Count == 0 && exchanges.Count == 0)
             errors.Add("RabbitMQ resource must declare at least one queue or exchange");
 
-        foreach (var queue in rmq.Queues)
+        foreach (var queue in queues)
         {
-            if (string.IsNullOrWhiteSpace(queue.Name))
+            if (!queue.TryGetValue("name", out var name) || string.IsNullOrWhiteSpace(name?.ToString()))
                 errors.Add("Queue name is required");
 
-            if (queue.MessageTtlMs is < 1)
-                errors.Add($"Queue '{queue.Name}': messageTtlMs must be positive");
+            if (queue.TryGetValue("messageTtlMs", out var ttl) && ttl is int ttlVal && ttlVal < 1)
+                errors.Add($"Queue '{name}': messageTtlMs must be positive");
 
-            if (queue.Producers.Count == 0)
-                errors.Add($"Queue '{queue.Name}': must have at least one producer");
+            if (!queue.TryGetValue("producers", out var producers)
+                || producers is not JsonElement pArr || pArr.GetArrayLength() == 0)
+                errors.Add($"Queue '{name}': must have at least one producer");
         }
 
-        foreach (var exchange in rmq.Exchanges)
+        foreach (var exchange in exchanges)
         {
-            if (string.IsNullOrWhiteSpace(exchange.Name))
+            if (!exchange.TryGetValue("name", out var name) || string.IsNullOrWhiteSpace(name?.ToString()))
                 errors.Add("Exchange name is required");
         }
 
@@ -700,11 +685,13 @@ public class RabbitMqResourceProvider : IResourceProvider
     public Task<ResourcePlanResult> PlanAsync(
         ResourceDescriptor resource, PlanContext ctx, CancellationToken ct)
     {
-        var rmq = (RabbitMqMessagingResource)resource;
         var releaseName = $"{ctx.AppName}-rabbitmq";
         var ns = ctx.Platform.Defaults.NamespacePattern
             .Replace("{app}", ctx.AppName)
             .Replace("{env}", ctx.Environment);
+
+        var queues = GetListProperty(resource, "queues");
+        var exchanges = GetListProperty(resource, "exchanges");
 
         return Task.FromResult(new ResourcePlanResult
         {
@@ -721,93 +708,32 @@ public class RabbitMqResourceProvider : IResourceProvider
                 ["helmRelease"] = releaseName,
                 ["helmChart"] = "oci://registry-1.docker.io/bitnamicharts/rabbitmq",
                 ["namespace"] = ns,
-                ["queues"] = rmq.Queues.Select(q => q.Name).ToList(),
-                ["exchanges"] = rmq.Exchanges.Select(e => e.Name).ToList()
+                ["queues"] = queues.Select(q => q["name"]).ToList(),
+                ["exchanges"] = exchanges.Select(e => e["name"]).ToList()
             }
         });
     }
-}
-```
 
-### 5.3 The Messaging Provider (validates policies, generates ACLs)
-
-The `IMessagingProvider` interface currently accepts `KafkaMessagingResource`. For a
-RabbitMQ provider you would either generalize this interface or create a
-RabbitMQ-specific messaging interface. Here is how the pattern works using the
-existing registrar while keeping the same ACL-generation approach:
-
-```csharp
-// RabbitMqMessagingProvider.cs
-using Deskribe.Sdk;
-using Deskribe.Sdk.Models;
-using Deskribe.Sdk.Resources;
-
-namespace Deskribe.Plugins.Resources.RabbitMQ;
-
-/// <summary>
-/// Validates RabbitMQ-specific messaging policies and generates ACL/permission plans.
-/// In practice, you would extend IMessagingProvider or create a parallel interface
-/// for non-Kafka messaging. This example shows the ACL-generation pattern.
-/// </summary>
-public class RabbitMqMessagingProvider
-{
-    public string ProviderType => "rabbitmq.messaging";
-
-    public ValidationResult ValidateMessaging(RabbitMqMessagingResource resource)
+    private static List<Dictionary<string, object?>> GetListProperty(
+        ResourceDescriptor resource, string key)
     {
-        var errors = new List<string>();
+        if (!resource.Properties.TryGetValue(key, out var val) || val is not JsonElement arr)
+            return [];
 
-        foreach (var queue in resource.Queues)
-        {
-            // Platform policy: queues must have a dead-letter exchange in production
-            if (queue.DeadLetterExchange is null)
-                errors.Add($"Queue '{queue.Name}': production policy requires a dead-letter exchange");
-
-            // Platform policy: durable must be true
-            if (!queue.Durable)
-                errors.Add($"Queue '{queue.Name}': platform requires durable queues");
-        }
-
-        return errors.Count == 0
-            ? ValidationResult.Valid()
-            : ValidationResult.Invalid([.. errors]);
-    }
-
-    public List<Dictionary<string, object>> GenerateAcls(RabbitMqMessagingResource resource)
-    {
-        var acls = new List<Dictionary<string, object>>();
-
-        foreach (var queue in resource.Queues)
-        {
-            foreach (var producer in queue.Producers)
-            {
-                acls.Add(new Dictionary<string, object>
-                {
-                    ["principal"] = producer,
-                    ["vhost"] = "/",
-                    ["resource"] = queue.Name,
-                    ["permission"] = "write"
-                });
-            }
-
-            foreach (var consumer in queue.Consumers)
-            {
-                acls.Add(new Dictionary<string, object>
-                {
-                    ["principal"] = consumer,
-                    ["vhost"] = "/",
-                    ["resource"] = queue.Name,
-                    ["permission"] = "read"
-                });
-            }
-        }
-
-        return acls;
+        return arr.EnumerateArray()
+            .Select(el => el.EnumerateObject()
+                .ToDictionary(p => p.Name, p => (object?)p.Value))
+            .ToList();
     }
 }
 ```
 
-### 5.4 The Plugin Entry Point
+> **Note:** The old `IMessagingProvider` interface has been removed. Kafka, RabbitMQ,
+> and other messaging systems now register as standard `IResourceProvider` implementations.
+> ACL generation and messaging-specific validation belong in `ValidateAsync` and
+> `PlanAsync`, just like any other resource.
+
+### 5.2 The Plugin Entry Point
 
 ```csharp
 // RabbitMqPlugin.cs
@@ -815,20 +741,19 @@ using Deskribe.Sdk;
 
 namespace Deskribe.Plugins.Resources.RabbitMQ;
 
+[DeskribePlugin("rabbitmq")]
 public class RabbitMqPlugin : IPlugin
 {
-    public string Name => "RabbitMQ Messaging Provider";
+    public string Name => "RabbitMQ Resource Provider";
 
     public void Register(IPluginRegistrar registrar)
     {
         registrar.RegisterResourceProvider(new RabbitMqResourceProvider());
-        // When IMessagingProvider is generalized for non-Kafka types,
-        // also register: registrar.RegisterMessagingProvider(new RabbitMqMessagingProvider());
     }
 }
 ```
 
-### 5.5 Manifest Usage
+### 5.3 Manifest Usage
 
 ```json
 {
@@ -897,7 +822,7 @@ method:
 ```csharp
 // Inside DeskribeAspireExtensions.AddDeskribeManifest():
 case "mongodb":
-    AddMongoDbResource(builder, manifest.Name, resource as MongoDbResource, map);
+    AddMongoDbResource(builder, manifest.Name, resource, map);
     break;
 ```
 
@@ -906,7 +831,7 @@ case "mongodb":
 private static void AddMongoDbResource(
     IDistributedApplicationBuilder builder,
     string appName,
-    MongoDbResource? mongoResource,
+    ResourceDescriptor resource,
     ResourceDescriptorMap map)
 {
     var serverName = $"{appName}-mongodb";
@@ -914,7 +839,7 @@ private static void AddMongoDbResource(
 
     var server = builder.AddMongoDB(serverName);
 
-    if (mongoResource?.Version is { } version)
+    if (resource.Properties.TryGetValue("version", out var v) && v is string version)
         server = server.WithImageTag(version);
 
     server = server.WithMongoExpress();
@@ -928,19 +853,11 @@ private static void AddMongoDbResource(
 }
 ```
 
-### 6.3 Update the JSON Converter
+### 6.3 JSON Deserialization
 
-In the `ManifestResourceJsonConverter.Read` method, add:
-
-```csharp
-"mongodb" => JsonSerializer.Deserialize<MongoDbResource>(rawJson, innerOptions),
-```
-
-Also add the corresponding `using` alias at the top of the file:
-
-```csharp
-using SdkMongoDbResource = Deskribe.Sdk.Resources.MongoDbResource;
-```
+No custom JSON converter changes are needed. All resources are deserialized as
+`ResourceDescriptor` objects with extra fields stored in the `Properties` dictionary.
+The Aspire extension reads `resource.Properties` to extract MongoDB-specific config.
 
 ---
 
@@ -1182,73 +1099,53 @@ dotnet test tests/Deskribe.Plugins.Tests/ --filter "FullyQualifiedName~MongoDb"
 
 ## 9. Registering Your Plugin
 
-### 9.1 CLI (Program.cs)
+### 9.1 DI Registration (Recommended)
 
-In `src/Deskribe.Cli/Program.cs`, add the `using` and the registration call:
+The preferred way to register plugins is through DI with assembly scanning. In your
+`Program.cs` (CLI or Web), call `AddDeskribe` with the assemblies containing your plugins:
 
 ```csharp
-using Deskribe.Plugins.Resources.MongoDB;
-
-// ... alongside the other RegisterPlugin calls:
-pluginHost.RegisterPlugin(new MongoDbPlugin());
+// Register all plugins from one or more assemblies:
+services.AddDeskribe(
+    typeof(MongoDbPlugin).Assembly,
+    typeof(TerraformPlugin).Assembly,
+    typeof(AcaPlugin).Assembly
+);
 ```
 
-Also add a `<ProjectReference>` to `Deskribe.Cli.csproj`:
+This scans each assembly for classes annotated with `[DeskribePlugin]`, registers
+them with the DI container, and wires up the `PluginRegistry` automatically.
+
+Also add a `<ProjectReference>` to the consuming project's `.csproj`:
 
 ```xml
 <ProjectReference Include="..\Plugins\Deskribe.Plugins.Resources.MongoDB\Deskribe.Plugins.Resources.MongoDB.csproj" />
 ```
 
-### 9.2 Web Project (Program.cs)
+### 9.2 Manual Registration (Alternative)
 
-In `src/Deskribe.Web/Program.cs`, the same pattern applies inside the
-`PluginRegistry` factory lambda:
+If you need fine-grained control, you can register plugins manually:
 
 ```csharp
-using Deskribe.Plugins.Resources.MongoDB;
-
-// Inside the PluginRegistry singleton registration:
-builder.Services.AddSingleton<PluginRegistry>(sp =>
-{
-    var host = new PluginRegistry(sp.GetRequiredService<ILogger<PluginRegistry>>());
-    host.RegisterPlugin(new PostgresPlugin());
-    host.RegisterPlugin(new RedisPlugin());
-    host.RegisterPlugin(new KafkaPlugin());
-    host.RegisterPlugin(new MongoDbPlugin());   // <-- add this
-    host.RegisterPlugin(new PulumiPlugin());
-    host.RegisterPlugin(new KubernetesPlugin());
-    return host;
-});
-```
-
-Also add a `<ProjectReference>` to `Deskribe.Web.csproj`:
-
-```xml
-<ProjectReference Include="..\Plugins\Deskribe.Plugins.Resources.MongoDB\Deskribe.Plugins.Resources.MongoDB.csproj" />
+var registry = serviceProvider.GetRequiredService<PluginRegistry>();
+registry.DiscoverAndRegisterAll([
+    typeof(MongoDbPlugin).Assembly,
+    typeof(TerraformPlugin).Assembly
+]);
 ```
 
 ### 9.3 Aspire Support
 
 In `src/Deskribe.Aspire/DeskribeAspireExtensions.cs`:
 
-1. Add the type alias at the top:
-   ```csharp
-   using SdkMongoDbResource = Deskribe.Sdk.Resources.MongoDbResource;
-   ```
-
-2. Add the case to the switch in `AddDeskribeManifest`:
+1. Add the case to the switch in `AddDeskribeManifest`:
    ```csharp
    case "mongodb":
-       AddMongoDbResource(builder, manifest.Name, resource as SdkMongoDbResource, map);
+       AddMongoDbResource(builder, manifest.Name, resource, map);
        break;
    ```
 
-3. Add the case to `ManifestResourceJsonConverter.Read`:
-   ```csharp
-   "mongodb" => JsonSerializer.Deserialize<SdkMongoDbResource>(rawJson, innerOptions),
-   ```
-
-4. Add the `AddMongoDbResource` private method (shown in Section 6.2).
+2. Add the `AddMongoDbResource` private method (shown in Section 6.2).
 
 ### 9.4 Add to the Solution
 

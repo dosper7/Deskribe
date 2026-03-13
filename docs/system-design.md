@@ -1246,7 +1246,7 @@ class does and how they connect.
        name: workload.AppName
        port 80 -> targetPort 8080
 
-  ApplyAsync(manifest):
+  ApplyAsync(artifact):
     - Connects to K8s cluster via kubeconfig
     - For each resource: try read, if exists -> update, if 404 -> create
     - Requires a valid kubeconfig (fails if no cluster is available)

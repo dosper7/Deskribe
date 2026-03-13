@@ -118,7 +118,7 @@ is the translation layer.
 The platform config repo is owned by the platform team. Developers never modify it.
 It defines organizational defaults, per-environment overrides, provisioner mappings, and policies.
 
-### Directory structure
+### Directory structure (split-file format)
 
 ```
 platform-config/
@@ -130,6 +130,12 @@ platform-config/
     dr.json                 # Disaster recovery environment overrides
 ```
 
+Deskribe also supports a **single-file config format** where the entire platform
+configuration (including all environment overrides) lives in one file. This is useful
+for smaller teams or simpler setups. The split-file format above is recommended for
+larger organizations where different environments need distinct review and change
+management workflows.
+
 ### Full annotated `base.json`
 
 ```json
@@ -137,7 +143,6 @@ platform-config/
   "organization": "acme",
 
   "defaults": {
-    "runtime": "kubernetes",
     "region": "westeurope",
     "replicas": 2,
     "cpu": "250m",
@@ -1614,16 +1619,22 @@ The platform config controls the target per environment:
 {
   "organization": "acme",
   "defaults": {
-    "runtime": "kubernetes",
     "region": "westeurope",
     "replicas": 2,
     "cpu": "250m",
     "memory": "512Mi",
     "namespacePattern": "{app}-{env}"
   },
+  "runtime": {
+    "name": "kubernetes",
+    "config": {}
+  },
   "provisioners": {
     "postgres": "pulumi",
     "redis": "pulumi"
+  },
+  "provisionerConfigs": {
+    "pulumi": { "projectDir": "./infra/pulumi" }
   },
   "policies": {
     "allowedRegions": ["westeurope", "northeurope", "us-east-1", "us-west-2"],
@@ -1927,6 +1938,32 @@ Key points:
 - The validate step catches policy violations before any infrastructure is touched.
 - The image tag is tied to the git SHA for full traceability.
 
+### GitOps workflows with `deskribe generate`
+
+For GitOps-style pipelines where you need to commit generated artifacts to a repo
+(instead of running `deskribe apply` directly), use the `deskribe generate` command:
+
+```bash
+deskribe generate \
+  -f deskribe.json \
+  --env prod \
+  --platform ./platform-config \
+  --output ./generated
+```
+
+This generates the following files without applying anything:
+
+```
+generated/
+  terraform.tfvars.json    # Input variables for Terraform provisioner
+  helm-values.yaml         # Helm values for Kubernetes runtime plugin
+  bindings.json            # Resource bindings (resolved references, outputs)
+```
+
+You can then commit these files to a GitOps repo (e.g., for ArgoCD or Flux) or
+feed them into your own CI/CD pipeline that runs `terraform apply` and `helm upgrade`
+independently.
+
 ---
 
 ## 13. Azure AKS Multi-Region Deployment
@@ -2158,8 +2195,11 @@ public interface IResourceProvider
 
 ## Config Merge Order
 
-Understanding the merge order is critical for platform teams. Values are merged in
-layers with clear priority:
+Understanding the merge order is critical for platform teams. `PlatformDefaults`
+properties are all nullable. Merging uses **nullable-based semantics**: a higher-priority
+layer only overrides a value if it explicitly sets it (non-null). This replaces the
+older approach of comparing against hardcoded defaults. Values are merged in layers
+with clear priority:
 
 ```
   Layer 1 (lowest priority):   base.json          Platform defaults
