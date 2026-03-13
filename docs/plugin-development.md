@@ -8,9 +8,10 @@ used by the built-in Postgres, Redis, Kafka, Pulumi, and Kubernetes plugins.
 
 ## 1. Plugin Architecture Overview
 
-Deskribe uses a **registrar pattern**: each plugin implements `IPlugin`, and the engine
-calls `Register()` at startup, passing an `IPluginRegistrar` that the plugin uses to
-hand over its providers and adapters.
+Deskribe uses **assembly scanning** and a `PluginRegistry` to discover plugins at
+startup. Each plugin class is annotated with `[DeskribePlugin("name")]` and implements
+`IPlugin`. The registry scans assemblies, finds all plugin classes, and registers their
+providers, provisioners, and runtime plugins automatically.
 
 ```
   deskribe.json                  platform-config/
@@ -24,8 +25,8 @@ hand over its providers and adapters.
        |          |           |
        v          v           v
  +-----------+ +---------+ +-----------+
- | Resource  | | Backend | | Runtime   |
- | Providers | | Adapters| | Adapters  |
+ | Resource  | | Provi-  | | Runtime   |
+ | Providers | | sioners | | Plugins   |
  +-----------+ +---------+ +-----------+
  | postgres  | | pulumi  | | kubernetes|
  | redis     | | terraform| | aca      |
@@ -35,24 +36,27 @@ hand over its providers and adapters.
        ^          ^           ^
        |          |           |
  +------------------------------------------+
- |     PluginRegistry (implements IPluginRegistrar)    |
- |  Stores providers/adapters in dictionaries      |
- |  Engine looks them up by string key             |
+ |  PluginRegistry (assembly scanning)           |
+ |  Discovers [DeskribePlugin] classes           |
+ |  Stores providers/provisioners by key         |
  +------------------------------------------+
 ```
 
 **How it works at startup:**
 
 ```csharp
-// In Program.cs — the engine asks each plugin to register itself
-var pluginHost = serviceProvider.GetRequiredService<PluginRegistry>();
-pluginHost.RegisterPlugin(new MongoDbPlugin());   // your new plugin
+// In Program.cs — DI registration with assembly scanning
+services.AddDeskribe(typeof(MongoDbPlugin).Assembly);
+
+// Or discover and register all plugins from multiple assemblies:
+var registry = serviceProvider.GetRequiredService<PluginRegistry>();
+registry.DiscoverAndRegisterAll(assemblies);
 ```
 
-Inside `RegisterPlugin`, the host calls `plugin.Register(this)`, and your plugin
-calls whichever `registrar.RegisterXxx()` methods apply. The host stores them in
-dictionaries keyed by `ResourceType` or adapter `Name`, and the engine looks them
-up at validate/plan/apply time.
+The registry scans assemblies for classes annotated with `[DeskribePlugin]`,
+instantiates them, and calls `Register()`. Providers and provisioners are stored
+in dictionaries keyed by `ResourceType` or provisioner `Name`, and the engine
+looks them up at validate/plan/apply time.
 
 ---
 
@@ -62,39 +66,27 @@ We will build a **MongoDB resource provider** from scratch. When done, developer
 can declare MongoDB in their `deskribe.json` and Deskribe will validate, plan, and
 provision it.
 
-### 2.1 Define the Resource Record
+### 2.1 Resource Descriptors
 
-Resource records extend `DeskribeResource` and carry the fields a developer can set
-in their manifest.
-
-```csharp
-// MongoDbResource.cs
-namespace Deskribe.Sdk.Resources;
-
-public sealed record MongoDbResource : DeskribeResource
-{
-    public string? Version { get; init; }
-    public bool? ReplicaSet { get; init; }
-    public int? StorageGb { get; init; }
-}
-```
-
-The `Type` and `Size` properties come from the base class. `Version`, `ReplicaSet`,
-and `StorageGb` are MongoDB-specific options.
+Resources are no longer represented by concrete record types. Instead, every resource
+is a `ResourceDescriptor` with a `Properties` dictionary that holds the resource-specific
+configuration. Developers declare properties in their `deskribe.json`, and providers
+extract them at runtime using `resource.Properties.TryGetValue(...)`.
 
 ### 2.2 Create the Resource Provider
 
-The provider implements `IResourceProvider`. It has two jobs: **validate** the
-developer's config and **plan** what infrastructure to create.
+The provider implements `IResourceProvider`. It has three jobs: declare a **schema**
+for its accepted properties, **validate** the developer's config, and **plan** what
+infrastructure to create.
 
 ```csharp
 // MongoDbResourceProvider.cs
 using Deskribe.Sdk;
 using Deskribe.Sdk.Models;
-using Deskribe.Sdk.Resources;
 
 namespace Deskribe.Plugins.Resources.MongoDB;
 
+[DeskribePlugin("mongodb")]
 public class MongoDbResourceProvider : IResourceProvider
 {
     public string ResourceType => "mongodb";
@@ -102,22 +94,30 @@ public class MongoDbResourceProvider : IResourceProvider
     private static readonly HashSet<string> ValidSizes = ["xs", "s", "m", "l", "xl"];
     private static readonly HashSet<string> ValidVersions = ["6.0", "7.0", "8.0"];
 
-    public Task<ValidationResult> ValidateAsync(
-        DeskribeResource resource, ValidationContext ctx, CancellationToken ct)
+    public ResourceSchema GetSchema() => new()
     {
-        if (resource is not MongoDbResource mongo)
-            return Task.FromResult(
-                ValidationResult.Invalid($"Expected MongoDbResource but got {resource.GetType().Name}"));
+        Properties =
+        {
+            ["version"] = new SchemaProperty { Type = "string", Description = "MongoDB major version" },
+            ["replicaSet"] = new SchemaProperty { Type = "boolean", Description = "Enable replica set" },
+            ["storageGb"] = new SchemaProperty { Type = "integer", Description = "Storage in GB (1-16384)" }
+        }
+    };
 
+    public Task<ValidationResult> ValidateAsync(
+        ResourceDescriptor resource, ValidationContext ctx, CancellationToken ct)
+    {
         var errors = new List<string>();
 
-        if (mongo.Size is not null && !ValidSizes.Contains(mongo.Size))
-            errors.Add($"Invalid MongoDB size '{mongo.Size}'. Valid sizes: {string.Join(", ", ValidSizes)}");
+        if (resource.Size is not null && !ValidSizes.Contains(resource.Size))
+            errors.Add($"Invalid MongoDB size '{resource.Size}'. Valid sizes: {string.Join(", ", ValidSizes)}");
 
-        if (mongo.Version is not null && !ValidVersions.Contains(mongo.Version))
-            errors.Add($"Invalid MongoDB version '{mongo.Version}'. Valid versions: {string.Join(", ", ValidVersions)}");
+        if (resource.Properties.TryGetValue("version", out var v) && v is string version
+            && !ValidVersions.Contains(version))
+            errors.Add($"Invalid MongoDB version '{version}'. Valid versions: {string.Join(", ", ValidVersions)}");
 
-        if (mongo.StorageGb is < 1 or > 16384)
+        if (resource.Properties.TryGetValue("storageGb", out var sg) && sg is int storageGb
+            && storageGb is < 1 or > 16384)
             errors.Add("storageGb must be between 1 and 16384");
 
         return Task.FromResult(errors.Count == 0
@@ -126,13 +126,18 @@ public class MongoDbResourceProvider : IResourceProvider
     }
 
     public Task<ResourcePlanResult> PlanAsync(
-        DeskribeResource resource, PlanContext ctx, CancellationToken ct)
+        ResourceDescriptor resource, PlanContext ctx, CancellationToken ct)
     {
-        var mongo = resource as MongoDbResource;
-        var size = mongo?.Size ?? "s";
-        var version = mongo?.Version ?? "7.0";
-        var replicaSet = mongo?.ReplicaSet ?? ctx.EnvironmentConfig.Defaults.Ha ?? false;
-        var storageGb = mongo?.StorageGb ?? 10;
+        var size = resource.Size ?? "s";
+
+        resource.Properties.TryGetValue("version", out var vObj);
+        var version = vObj as string ?? "7.0";
+
+        resource.Properties.TryGetValue("replicaSet", out var rsObj);
+        var replicaSet = rsObj is bool rs ? rs : ctx.EnvironmentConfig.Defaults.Ha ?? false;
+
+        resource.Properties.TryGetValue("storageGb", out var sgObj);
+        var storageGb = sgObj is int sg ? sg : 10;
 
         var releaseName = $"{ctx.AppName}-mongodb";
         var ns = ctx.Platform.Defaults.NamespacePattern
@@ -164,19 +169,23 @@ public class MongoDbResourceProvider : IResourceProvider
 }
 ```
 
+**What GetSchema returns:**
+
+- A `ResourceSchema` declaring which properties the provider accepts, their types,
+  and descriptions. The engine uses this for manifest validation and editor tooling.
+
 **What ValidateAsync checks:**
 
-- The resource is actually a `MongoDbResource` (guards against a misconfigured engine).
-- `Size` is one of the allowed T-shirt sizes.
-- `Version` is a supported MongoDB major version.
-- `StorageGb` falls within an acceptable range.
+- `Size` is one of the allowed T-shirt sizes (from the base `ResourceDescriptor`).
+- `version` (from `Properties`) is a supported MongoDB major version.
+- `storageGb` (from `Properties`) falls within an acceptable range.
 
 **What PlanAsync returns:**
 
 - `PlannedOutputs` -- connection details that other services will consume via
   `@resource(mongodb).connectionString` references.
-- `Configuration` -- the Helm chart details, sizing, and namespace the backend
-  adapter will use to actually create the resource.
+- `Configuration` -- the Helm chart details, sizing, and namespace the provisioner
+  will use to actually create the resource.
 
 ### 2.3 Create the Plugin Entry Point
 
@@ -186,6 +195,7 @@ using Deskribe.Sdk;
 
 namespace Deskribe.Plugins.Resources.MongoDB;
 
+[DeskribePlugin("mongodb")]
 public class MongoDbPlugin : IPlugin
 {
     public string Name => "MongoDB Resource Provider";
@@ -196,6 +206,10 @@ public class MongoDbPlugin : IPlugin
     }
 }
 ```
+
+> **Note:** The `[DeskribePlugin("mongodb")]` attribute enables automatic discovery
+> via assembly scanning. The registry finds this class when you call
+> `registry.DiscoverAndRegisterAll(assemblies)`.
 
 ### 2.4 Manifest Usage (deskribe.json)
 
@@ -225,25 +239,15 @@ Developers declare MongoDB in their application manifest:
 }
 ```
 
-### 2.5 Wire Up the JSON Deserializer
+### 2.5 Register via DI
 
-The `ConfigLoader` and the Aspire `ManifestResourceJsonConverter` both need to know
-how to deserialize `"type": "mongodb"` into a `MongoDbResource`. Add a case to the
-polymorphic switch in `ConfigLoader.cs` (Core) and `DeskribeAspireExtensions.cs`
-(Aspire):
-
-```csharp
-// In the type-switch that maps "type" strings to record types:
-"mongodb" => JsonSerializer.Deserialize<MongoDbResource>(rawJson, innerOptions),
-```
-
-### 2.6 Register in Program.cs
+No custom JSON deserialization is needed. All resources are deserialized as
+`ResourceDescriptor` with their extra fields stored in the `Properties` dictionary.
+Register your plugin assembly with DI:
 
 ```csharp
-using Deskribe.Plugins.Resources.MongoDB;
-
-// ... after building the service provider:
-pluginHost.RegisterPlugin(new MongoDbPlugin());
+// In Program.cs or Startup.cs:
+services.AddDeskribe(typeof(MongoDbPlugin).Assembly);
 ```
 
 ---
@@ -263,9 +267,9 @@ using System.Text.Json;
 using Deskribe.Sdk;
 using Deskribe.Sdk.Models;
 
-namespace Deskribe.Plugins.Backend.Terraform;
+namespace Deskribe.Plugins.Provisioners.Terraform;
 
-public class TerraformBackendAdapter : IProvisioner
+public class TerraformProvisioner : IProvisioner
 {
     public string Name => "terraform";
 
@@ -322,6 +326,24 @@ public class TerraformBackendAdapter : IProvisioner
 
         await RunTerraformAsync(workDir, "destroy -auto-approve -input=false", ct);
         Console.WriteLine($"[Terraform] Destroyed {appName}-{environment}");
+    }
+
+    public async Task<IReadOnlyList<ProvisionArtifact>> GenerateArtifactsAsync(
+        DeskribePlan plan, CancellationToken ct)
+    {
+        // Generate Terraform config files as artifacts without applying them.
+        // Useful for GitOps workflows where artifacts are committed to a repo.
+        var artifacts = new List<ProvisionArtifact>();
+        var tfConfig = BuildTerraformConfig(plan);
+
+        artifacts.Add(new ProvisionArtifact
+        {
+            FileName = "main.tf.json",
+            Content = JsonSerializer.Serialize(tfConfig, new JsonSerializerOptions { WriteIndented = true }),
+            ArtifactType = "terraform-config"
+        });
+
+        return artifacts;
     }
 
     private static Dictionary<string, object> BuildTerraformConfig(DeskribePlan plan)
@@ -385,22 +407,23 @@ public class TerraformBackendAdapter : IProvisioner
 // TerraformPlugin.cs
 using Deskribe.Sdk;
 
-namespace Deskribe.Plugins.Backend.Terraform;
+namespace Deskribe.Plugins.Provisioners.Terraform;
 
+[DeskribePlugin("terraform")]
 public class TerraformPlugin : IPlugin
 {
-    public string Name => "Terraform Backend Adapter";
+    public string Name => "Terraform Provisioner";
 
     public void Register(IPluginRegistrar registrar)
     {
-        registrar.RegisterProvisioner(new TerraformBackendAdapter());
+        registrar.RegisterProvisioner(new TerraformProvisioner());
     }
 }
 ```
 
 ### 3.3 Terraform vs. Pulumi -- Key Differences
 
-| Concern            | Pulumi Adapter (built-in)           | Terraform Adapter (this example)        |
+| Concern            | Pulumi Provisioner (built-in)       | Terraform Provisioner (this example)    |
 |--------------------|-------------------------------------|-----------------------------------------|
 | Provisioning model | Pulumi Automation API (in-process)  | `terraform` CLI (out-of-process)        |
 | State storage      | Pulumi Cloud / self-managed backend | `.tfstate` file or remote backend       |
@@ -410,7 +433,7 @@ public class TerraformPlugin : IPlugin
 ### 3.4 How Resource Plans Map to IaC Resources
 
 The engine calls each resource provider's `PlanAsync`, which returns a
-`ResourcePlanResult`. The backend adapter receives the full `DeskribePlan`
+`ResourcePlanResult`. The provisioner receives the full `DeskribePlan`
 (containing all `ResourcePlanResult` entries) and translates each one into the
 corresponding IaC construct:
 
@@ -423,13 +446,13 @@ Configuration["namespace"]       -->   namespace = "myapp-dev"
 Configuration["version"]         -->   set { name = "image.tag" }
 ```
 
-### 3.5 Selecting a Backend per Resource Type
+### 3.5 Selecting a Provisioner per Resource Type
 
-The platform config maps resource types to backend adapters:
+The platform config maps resource types to provisioners:
 
 ```json
 {
-  "backends": {
+  "provisioners": {
     "postgres": "terraform",
     "redis": "pulumi",
     "mongodb": "terraform"
@@ -438,25 +461,25 @@ The platform config maps resource types to backend adapters:
 ```
 
 The engine reads this mapping in `ApplyAsync` to route each resource plan to the
-correct backend adapter.
+correct provisioner.
 
 ---
 
-## 4. Creating a Runtime Adapter (Step-by-Step)
+## 4. Creating a Runtime Plugin (Step-by-Step)
 
-Runtime adapters deploy workloads to a compute platform. The built-in adapter
-targets Kubernetes. Here is an **Azure Container Apps** runtime adapter.
+Runtime plugins deploy workloads to a compute platform. The built-in plugin
+targets Kubernetes. Here is an **Azure Container Apps** runtime plugin.
 
 ### 4.1 The Adapter
 
 ```csharp
-// AcaRuntimeAdapter.cs
+// AcaRuntimePlugin.cs
 using System.Text.Json;
 using Deskribe.Sdk;
 
 namespace Deskribe.Plugins.Runtime.Aca;
 
-public class AcaRuntimeAdapter : IRuntimePlugin
+public class AcaRuntimePlugin : IRuntimePlugin
 {
     public string Name => "aca";
 
@@ -554,37 +577,38 @@ using Deskribe.Sdk;
 
 namespace Deskribe.Plugins.Runtime.Aca;
 
+[DeskribePlugin("aca")]
 public class AcaPlugin : IPlugin
 {
-    public string Name => "Azure Container Apps Runtime Adapter";
+    public string Name => "Azure Container Apps Runtime Plugin";
 
     public void Register(IPluginRegistrar registrar)
     {
-        registrar.RegisterRuntimePlugin(new AcaRuntimeAdapter());
+        registrar.RegisterRuntimePlugin(new AcaRuntimePlugin());
     }
 }
 ```
 
-### 4.3 How the Engine Uses Runtime Adapters
+### 4.3 How the Engine Uses Runtime Plugins
 
 1. **RenderAsync** -- takes a `WorkloadPlan` (app name, replicas, CPU, memory,
    environment variables with resolved `@resource()` references) and produces a
    `RuntimeArtifact` containing the deployment spec.
 
 2. **ApplyAsync** -- takes the rendered manifest and pushes it to the target
-   platform. The Kubernetes adapter uses the `KubernetesClient` C# SDK to create
-   or update Namespace, Secret, Deployment, and Service objects. Your ACA adapter
+   platform. The Kubernetes plugin uses the `KubernetesClient` C# SDK to create
+   or update Namespace, Secret, Deployment, and Service objects. Your ACA plugin
    would use `Azure.ResourceManager` to deploy a Container App.
 
 3. **DestroyAsync** -- tears down the namespace / resource group.
 
-### 4.4 A Note on the Built-in Kubernetes Adapter
+### 4.4 A Note on the Built-in Kubernetes Plugin
 
-The Kubernetes runtime adapter (`KubernetesRuntimeAdapter`) uses the official
+The Kubernetes runtime plugin (`KubernetesRuntimePlugin`) uses the official
 `KubernetesClient` NuGet package (version 18.0.13). It renders four resource types
 (Namespace, Secret, Deployment, Service) and applies them using a create-or-update
 pattern with `HttpOperationException` catch for 404-based upserts. A valid kubeconfig
-is required — the adapter will throw if no cluster is available.
+is required -- the plugin will throw if no cluster is available.
 
 ---
 
@@ -600,7 +624,7 @@ and generates ACL entries. Here is a **RabbitMQ messaging provider**.
 // RabbitMqMessagingResource.cs
 namespace Deskribe.Sdk.Resources;
 
-public sealed record RabbitMqMessagingResource : DeskribeResource
+public sealed record RabbitMqMessagingResource : ResourceDescriptor
 {
     public List<RabbitMqQueue> Queues { get; init; } = [];
     public List<RabbitMqExchange> Exchanges { get; init; } = [];
@@ -639,7 +663,7 @@ public class RabbitMqResourceProvider : IResourceProvider
     public string ResourceType => "rabbitmq.messaging";
 
     public Task<ValidationResult> ValidateAsync(
-        DeskribeResource resource, ValidationContext ctx, CancellationToken ct)
+        ResourceDescriptor resource, ValidationContext ctx, CancellationToken ct)
     {
         if (resource is not RabbitMqMessagingResource rmq)
             return Task.FromResult(
@@ -674,7 +698,7 @@ public class RabbitMqResourceProvider : IResourceProvider
     }
 
     public Task<ResourcePlanResult> PlanAsync(
-        DeskribeResource resource, PlanContext ctx, CancellationToken ct)
+        ResourceDescriptor resource, PlanContext ctx, CancellationToken ct)
     {
         var rmq = (RabbitMqMessagingResource)resource;
         var releaseName = $"{ctx.AppName}-rabbitmq";
@@ -883,7 +907,7 @@ private static void AddMongoDbResource(
     IDistributedApplicationBuilder builder,
     string appName,
     MongoDbResource? mongoResource,
-    DeskribeResourceMap map)
+    ResourceDescriptorMap map)
 {
     var serverName = $"{appName}-mongodb";
     var dbName = $"{appName}-db";
@@ -933,11 +957,11 @@ src/
       MongoDbResourceProvider.cs
 ```
 
-If you are building a backend adapter or runtime adapter, the layout is identical
+If you are building a provisioner or runtime plugin, the layout is identical
 but with a different naming prefix:
 
 ```
-Deskribe.Plugins.Backend.Terraform/
+Deskribe.Plugins.Provisioners.Terraform/
 Deskribe.Plugins.Runtime.Aca/
 ```
 
@@ -959,8 +983,8 @@ Deskribe.Plugins.Runtime.Aca/
 </Project>
 ```
 
-If your plugin needs external packages (like the Kubernetes adapter needs
-`KubernetesClient`, or a Terraform adapter might need `HashiCorp.Cdktf`), add them
+If your plugin needs external packages (like the Kubernetes plugin needs
+`KubernetesClient`, or a Terraform provisioner might need `HashiCorp.Cdktf`), add them
 under an `<ItemGroup>`:
 
 ```xml
@@ -974,11 +998,11 @@ under an `<ItemGroup>`:
 | Plugin type       | Project name pattern                          | Example                                    |
 |-------------------|-----------------------------------------------|--------------------------------------------|
 | Resource provider | `Deskribe.Plugins.Resources.{Name}`           | `Deskribe.Plugins.Resources.MongoDB`       |
-| Backend adapter   | `Deskribe.Plugins.Backend.{Name}`             | `Deskribe.Plugins.Backend.Terraform`       |
-| Runtime adapter   | `Deskribe.Plugins.Runtime.{Name}`             | `Deskribe.Plugins.Runtime.Aca`             |
+| Provisioner       | `Deskribe.Plugins.Provisioners.{Name}`        | `Deskribe.Plugins.Provisioners.Terraform`  |
+| Runtime plugin    | `Deskribe.Plugins.Runtime.{Name}`             | `Deskribe.Plugins.Runtime.Aca`             |
 
 The plugin class is named `{Name}Plugin`, the provider `{Name}ResourceProvider`,
-and the adapter `{Name}BackendAdapter` or `{Name}RuntimeAdapter`.
+the provisioner `{Name}Provisioner`, or the runtime plugin `{Name}RuntimePlugin`.
 
 ---
 
@@ -1236,24 +1260,22 @@ dotnet sln Deskribe.slnx add src/Plugins/Resources/MongoDB/Deskribe.Plugins.Reso
 
 ## Quick Reference: Interface Summary
 
-| Interface            | Key property     | Methods                                          | Used for                     |
-|----------------------|------------------|--------------------------------------------------|------------------------------|
-| `IPlugin`            | `Name`           | `Register(IPluginRegistrar)`                     | Entry point for all plugins  |
-| `IResourceProvider`  | `ResourceType`   | `ValidateAsync`, `PlanAsync`                     | Validating and planning infra|
-| `IProvisioner`    | `Name`           | `ApplyAsync`, `DestroyAsync`                     | Provisioning infra via IaC   |
-| `IRuntimePlugin`    | `Name`           | `RenderAsync`, `ApplyAsync`, `DestroyAsync`      | Deploying workloads          |
-| `IMessagingProvider`  | `ProviderType`   | `ValidateAsync`, `PlanAsync`                     | Messaging-specific policies  |
+| Interface            | Key property     | Methods                                                          | Used for                     |
+|----------------------|------------------|------------------------------------------------------------------|------------------------------|
+| `IPlugin`            | `Name`           | `Register(IPluginRegistrar)`                                     | Entry point for all plugins  |
+| `IResourceProvider`  | `ResourceType`   | `ValidateAsync`, `PlanAsync`, `GetSchema`                        | Validating and planning infra|
+| `IProvisioner`       | `Name`           | `ApplyAsync`, `DestroyAsync`, `GenerateArtifactsAsync`           | Provisioning infra via IaC   |
+| `IRuntimePlugin`     | `Name`           | `RenderAsync`, `ApplyAsync`, `DestroyAsync`                      | Deploying workloads          |
 
 ---
 
 ## Checklist for a New Plugin
 
-1. Create the resource record in `Deskribe.Sdk/Resources/` (if it is a new resource type).
-2. Create the plugin project under `src/Plugins/`.
-3. Implement `IResourceProvider`, `IProvisioner`, or `IRuntimePlugin`.
-4. Implement `IPlugin` to register your providers/adapters.
-5. Add the JSON deserialization case to `ConfigLoader` and the Aspire converter.
-6. Register the plugin in both `Deskribe.Cli/Program.cs` and `Deskribe.Web/Program.cs`.
-7. Add Aspire support in `DeskribeAspireExtensions.cs`.
-8. Write xUnit tests in `tests/Deskribe.Plugins.Tests/`.
-9. Add the project to the solution with `dotnet sln add`.
+1. Create the plugin project under `src/Plugins/`.
+2. Implement `IResourceProvider`, `IProvisioner`, or `IRuntimePlugin`.
+3. Add the `[DeskribePlugin("name")]` attribute to your plugin class.
+4. Implement `GetSchema()` on resource providers to declare accepted properties.
+5. Register via DI: `services.AddDeskribe(typeof(MyPlugin).Assembly)` (assembly scanning).
+6. Add Aspire support in `DeskribeAspireExtensions.cs`.
+7. Write xUnit tests in `tests/Deskribe.Plugins.Tests/`.
+8. Add the project to the solution with `dotnet sln add`.

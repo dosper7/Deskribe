@@ -94,10 +94,10 @@ running in Kubernetes.
 |---|---|---|
 | **ConfigLoader** | Reads `deskribe.json`, `base.json`, and `envs/{env}.json` from disk. Deserializes JSON into `ResourceDescriptor` records using `[JsonExtensionData]` for type-specific properties -- no polymorphic converter needed. | First step of every command |
 | **MergeEngine** | Takes all three config layers and produces a single `WorkloadPlan`. Platform defaults form the base, environment config overrides those, developer per-env overrides win last. | After loading, before validation |
-| **PolicyValidator** | Checks that the manifest name is set, that all resource types have backends, and that `@resource()` references point to declared resources. | After merging |
-| **ResourceReferenceResolver** | Extracts `@resource(type).property` expressions from env vars using regex. During apply, replaces them with real values from backend outputs. | Validation and Apply phases |
-| **PluginRegistry** | In-process registry. Plugins register themselves at startup. The engine asks "give me the provider for `postgres`" and gets back `ResourceDescriptorProvider`. | Startup (registration), every command (lookup) |
-| **Provisioner** | Takes a `DeskribePlan` and provisions infrastructure. Pulumi adapter would use Automation API. Returns resource outputs (connection strings, endpoints). | Apply phase |
+| **PolicyValidator** | Checks that the manifest name is set, that all resource types have provisioners, and that `@resource()` references point to declared resources. | After merging |
+| **ResourceReferenceResolver** | Extracts `@resource(type).property` expressions from env vars using regex. During apply, replaces them with real values from provisioner outputs. | Validation and Apply phases |
+| **PluginRegistry** | In-process registry. Plugins are discovered via `[DeskribePlugin]` attribute and assembly scanning at startup. The engine asks "give me the provider for `postgres`" and gets back `PostgresResourceProvider`. | Startup (registration), every command (lookup) |
+| **Provisioner** | Takes a `DeskribePlan` and provisions infrastructure. Pulumi provisioner uses Automation API. Also supports `deskribe generate` via `GenerateArtifactsAsync`. Returns resource outputs (connection strings, endpoints). | Apply and Generate phases |
 | **Runtime Plugin** | Takes a `WorkloadPlan` with resolved env vars. Renders Kubernetes YAML (Namespace + Secret + Deployment + Service). Applies to cluster. | Apply phase, after infra is up |
 
 ---
@@ -273,7 +273,7 @@ set guardrails without blocking developers.
       "namespacePattern":               }                                }
         "{app}-{env}"
     },
-    "backends": {
+    "provisioners": {
       "postgres": "pulumi",
       ...
     }
@@ -357,7 +357,7 @@ overlay says 3 for prod, and the developer says 5 for prod:
   |                   | authoritative    | declares resources. Platform config   |
   |                   |                  | does not add or remove resources.     |
   +-------------------+------------------+---------------------------------------+
-  | Backends          | Platform only    | "postgres": "pulumi" comes only from  |
+  | Provisioners      | Platform only    | "postgres": "pulumi" comes only from  |
   |                   |                  | base.json. Developer cannot choose    |
   |                   |                  | Terraform vs Pulumi.                  |
   +-------------------+------------------+---------------------------------------+
@@ -371,28 +371,28 @@ overlay says 3 for prod, and the developer says 5 for prod:
 
 ```csharp
 // MergeEngine.MergeWorkloadPlan() -- simplified
+// PlatformDefaults properties are nullable (int?, string?) for clean merging.
 
 // Step 1: Start with platform defaults
 var replicas = platform.Defaults.Replicas;     // 2
 var cpu      = platform.Defaults.Cpu;           // "250m"
 var memory   = platform.Defaults.Memory;        // "512Mi"
 
-// Step 2: Environment overlay (only if different from platform defaults)
-if (envConfig.Defaults.Replicas != 0
-    && envConfig.Defaults.Replicas != platform.Defaults.Replicas)
+// Step 2: Environment overlay (nullable-based: non-null wins)
+if (envConfig.Defaults.Replicas is not null)
     replicas = envConfig.Defaults.Replicas;     // 3 (for prod)
 
-if (envConfig.Defaults.Cpu != platform.Defaults.Cpu)
+if (envConfig.Defaults.Cpu is not null)
     cpu = envConfig.Defaults.Cpu;               // "500m" (for prod)
 
-if (envConfig.Defaults.Memory != platform.Defaults.Memory)
+if (envConfig.Defaults.Memory is not null)
     memory = envConfig.Defaults.Memory;         // "1Gi" (for prod)
 
 // Step 3: Developer per-env overrides (highest priority)
 var service = manifest.Services.FirstOrDefault();
 if (service?.Overrides.TryGetValue(environment, out var devOverride) == true)
 {
-    if (devOverride.Replicas.HasValue)
+    if (devOverride.Replicas is not null)
         replicas = devOverride.Replicas.Value;  // 5 (developer said so)
     if (devOverride.Cpu is not null)
         cpu = devOverride.Cpu;                  // "1000m"
@@ -415,7 +415,10 @@ Plugins are how Deskribe stays extensible. Each infrastructure concern
 (Postgres, Redis, Kafka, Pulumi, Kubernetes) is a separate plugin that
 registers with the PluginRegistry at startup.
 
-### Plugin Host and Registration
+### Plugin Registry and Discovery
+
+Plugins are discovered via the `[DeskribePlugin]` attribute and assembly scanning.
+Registration happens automatically through `services.AddDeskribe()` at DI setup.
 
 ```
                        +---------------------+
@@ -423,7 +426,8 @@ registers with the PluginRegistry at startup.
                        |   (Program.cs)      |
                        +----------+----------+
                                   |
-                    Calls RegisterPlugin() for each:
+               services.AddDeskribe() scans assemblies
+               for [DeskribePlugin] attribute:
                                   |
           +-----------+-----------+-----------+-----------+
           |           |           |           |           |
@@ -434,27 +438,25 @@ registers with the PluginRegistry at startup.
   +-----------+ +-----------+ +---------+ +---------+ +-----------+
        |             |             |           |            |
        | Register    | Register   | Register  | Register   | Register
-       | Resource    | Resource   | Resource  | Backend    | Runtime
-       | Provider    | Provider   | Provider  | Adapter    | Adapter
-       |             |             | +Messaging|           |
+       | Resource    | Resource   | Resource  | Provisioner| Runtime
+       | Provider    | Provider   | Provider  |            | Plugin
+       |             |             |           |            |
        v             v             v           v            v
   +----------------------------------------------------------------+
-  |                       PLUGIN HOST                               |
+  |                     PLUGIN REGISTRY                             |
   |                    (IPluginRegistrar)                           |
   |                                                                |
   |  _resourceProviders:                                           |
-  |    "postgres"         --> ResourceDescriptorProvider              |
-  |    "redis"            --> ResourceDescriptorProvider                 |
+  |    "postgres"         --> PostgresResourceProvider              |
+  |    "redis"            --> RedisResourceProvider                 |
   |    "kafka.messaging"  --> KafkaResourceProvider                 |
   |                                                                |
-  |  _backendAdapters:                                             |
-  |    "pulumi"           --> PulumiBackendAdapter                  |
+  |  _provisioners:                                                |
+  |    "pulumi"           --> PulumiProvisioner                     |
   |                                                                |
-  |  _runtimeAdapters:                                             |
-  |    "kubernetes"       --> KubernetesRuntimeAdapter              |
+  |  _runtimePlugins:                                              |
+  |    "kubernetes"       --> KubernetesRuntimePlugin               |
   |                                                                |
-  |  _messagingProviders:                                          |
-  |    "kafka.messaging"  --> KafkaMessagingProvider                |
   +----------------------------------------------------------------+
 ```
 
@@ -462,70 +464,77 @@ registers with the PluginRegistry at startup.
 
 ```
   IPlugin                              -- Base: has a Name, calls Register()
-  |
+  |                                       Discovered via [DeskribePlugin] attribute
   +-- Register(IPluginRegistrar)       -- Plugin tells the registrar what it provides
       |
-      |  The registrar accepts four types of capability:
+      |  The registrar accepts three types of capability:
       |
       +-- IResourceProvider            -- Validates + plans a resource type
       |     ResourceType: string       -- "postgres", "redis", "kafka.messaging"
+      |     GetSchema(): ResourceSchema -- Declares expected properties
       |     ValidateAsync(resource, ctx)
       |     PlanAsync(resource, ctx)
       |
-      +-- IProvisioner              -- Provisions/destroys infra
+      +-- IProvisioner                 -- Provisions/destroys infra + generates artifacts
       |     Name: string               -- "pulumi", "terraform"
       |     ApplyAsync(plan)           -- Returns resource outputs
+      |     GenerateArtifactsAsync()   -- For `deskribe generate` command
       |     DestroyAsync(app, env, platform)
       |
-      +-- IRuntimePlugin              -- Deploys workloads
-      |     Name: string               -- "kubernetes", "ecs"
-      |     RenderAsync(workload)      -- Returns YAML/manifest
-      |     ApplyAsync(manifest)       -- Deploys to cluster
-      |     DestroyAsync(namespace)
-      |
-      +-- IMessagingProvider           -- Specialized for topic/ACL management
-            ProviderType: string       -- "kafka.messaging"
-            ValidateAsync(resource, ctx)
-            PlanAsync(resource, ctx)
+      +-- IRuntimePlugin               -- Deploys workloads
+            Name: string               -- "kubernetes", "ecs"
+            RenderAsync(workload)      -- Returns RuntimeArtifact
+            ApplyAsync(artifact)       -- Deploys to cluster
+            DestroyAsync(namespace)
 ```
 
 ### How Plugins Register and Get Discovered
 
-At startup, `Program.cs` creates each plugin and calls `RegisterPlugin()`:
+At startup, `services.AddDeskribe()` scans loaded assemblies for classes
+decorated with `[DeskribePlugin]` and registers them automatically:
 
 ```csharp
 // CLI startup -- Program.cs
-var pluginHost = serviceProvider.GetRequiredService<PluginRegistry>();
-pluginHost.RegisterPlugin(new PostgresPlugin());    // registers IResourceProvider
-pluginHost.RegisterPlugin(new RedisPlugin());       // registers IResourceProvider
-pluginHost.RegisterPlugin(new KafkaPlugin());       // registers IResourceProvider + IMessagingProvider
-pluginHost.RegisterPlugin(new PulumiPlugin());      // registers IProvisioner
-pluginHost.RegisterPlugin(new KubernetesPlugin());  // registers IRuntimePlugin
+services.AddDeskribe();  // assembly scanning discovers all plugins
 ```
 
-Each plugin's `Register` method decides what to register:
+Each plugin is decorated with the `[DeskribePlugin]` attribute and its
+`Register` method decides what to register:
 
 ```csharp
 // PostgresPlugin.cs
+[DeskribePlugin]
 public class PostgresPlugin : IPlugin
 {
     public string Name => "Postgres Resource Provider";
 
     public void Register(IPluginRegistrar registrar)
     {
-        registrar.RegisterResourceProvider(new ResourceDescriptorProvider());
+        registrar.RegisterResourceProvider(new PostgresResourceProvider());
     }
 }
 
-// KafkaPlugin.cs -- registers TWO capabilities
+// KafkaPlugin.cs
+[DeskribePlugin]
 public class KafkaPlugin : IPlugin
 {
-    public string Name => "Kafka Messaging Provider";
+    public string Name => "Kafka Resource Provider";
 
     public void Register(IPluginRegistrar registrar)
     {
         registrar.RegisterResourceProvider(new KafkaResourceProvider());
-        registrar.RegisterMessagingProvider(new KafkaMessagingProvider());
+    }
+}
+
+// PulumiPlugin.cs
+[DeskribePlugin]
+public class PulumiPlugin : IPlugin
+{
+    public string Name => "Pulumi Provisioner";
+
+    public void Register(IPluginRegistrar registrar)
+    {
+        registrar.RegisterProvisioner(new PulumiProvisioner());
     }
 }
 ```
@@ -535,7 +544,7 @@ When the engine processes a resource, it asks the PluginRegistry:
 ```
   Engine: "I have a resource with type = 'postgres'. Who handles it?"
   PluginRegistry: looks up _resourceProviders["postgres"]
-  PluginRegistry: returns ResourceDescriptorProvider
+  PluginRegistry: returns PostgresResourceProvider
   Engine: calls provider.ValidateAsync() or provider.PlanAsync()
 ```
 
@@ -567,16 +576,22 @@ When the engine processes a resource, it asks the PluginRegistry:
   Phase 4: APPLY (deskribe apply)
   ===============================
   For each resource plan:
-    backendName = platform.Backends[resource.Type]    // "pulumi"
-    backend = PluginRegistry.GetBackendAdapter(backendName)
-    result = backend.ApplyAsync(plan)
+    provisionerName = platform.Provisioners[resource.Type]  // "pulumi"
+    provisioner = PluginRegistry.GetProvisioner(provisionerName)
+    result = provisioner.ApplyAsync(plan)
     --> Returns ProvisionResult with actual resource outputs
 
   Then:
-    runtimeName = platform.Defaults.Runtime           // "kubernetes"
-    runtime = PluginRegistry.GetRuntimeAdapter(runtimeName)
-    manifest = runtime.RenderAsync(workloadWithResolvedEnv)
-    runtime.ApplyAsync(manifest)
+    runtimeName = platform.RuntimeConfig.Name         // "kubernetes"
+    runtime = PluginRegistry.GetRuntimePlugin(runtimeName)
+    artifact = runtime.RenderAsync(workloadWithResolvedEnv)
+    runtime.ApplyAsync(artifact)
+
+  Phase 5: GENERATE (deskribe generate)
+  =====================================
+  Alternative to apply -- generates artifacts without deploying:
+    provisioner = PluginRegistry.GetProvisioner(provisionerName)
+    provisioner.GenerateArtifactsAsync(plan)
 ```
 
 ---
@@ -781,17 +796,17 @@ The `DeskribeEngine` orchestrates the entire flow. Every CLI command
   |  |  }                                                                |   |
   |  +-------------------------------------------------------------------+   |
   |                                                                           |
-  |  STAGE 5: APPLY INFRASTRUCTURE (via provisioners)                     |
+  |  STAGE 5: APPLY INFRASTRUCTURE (via provisioners)                        |
   |  +-------------------------------------------------------------------+   |
   |  |  For each resourcePlan in plan.ResourcePlans:                     |   |
-  |  |    backendName = platform.Backends[resourcePlan.ResourceType]      |   |
-  |  |    backend = PluginRegistry.GetBackendAdapter(backendName)            |   |
-  |  |    result = backend.ApplyAsync(plan)                              |   |
+  |  |    provName = platform.ProvisionerConfigs[resourcePlan.Type].Name |   |
+  |  |    provisioner = PluginRegistry.GetProvisioner(provName)          |   |
+  |  |    result = provisioner.ApplyAsync(plan)                          |   |
   |  |                                                                   |   |
   |  |  Collects: resourceOutputs["postgres"]["connectionString"] = ...  |   |
   |  +-------------------------------------------------------------------+   |
   |                                                                           |
-  |  -------  GATE: If backend fails, throw InvalidOperationException  -----  |
+  |  -------  GATE: If provisioner fails, throw InvalidOperationException  -  |
   |                                                                           |
   |  STAGE 6: RESOLVE REFERENCES                                              |
   |  +-------------------------------------------------------------------+   |
@@ -804,13 +819,13 @@ The `DeskribeEngine` orchestrates the entire flow. Every CLI command
   |                                                                           |
   |  STAGE 7: DEPLOY (via runtime plugin)                                    |
   |  +-------------------------------------------------------------------+   |
-  |  |  runtimeName = platform.Defaults.Runtime  // "kubernetes"         |   |
-  |  |  runtime = PluginRegistry.GetRuntimeAdapter(runtimeName)              |   |
+  |  |  runtimeName = platform.RuntimeConfig.Name  // "kubernetes"       |   |
+  |  |  runtime = PluginRegistry.GetRuntimePlugin(runtimeName)           |   |
   |  |                                                                   |   |
-  |  |  manifest = runtime.RenderAsync(resolvedWorkload)                 |   |
+  |  |  artifact = runtime.RenderAsync(resolvedWorkload)                 |   |
   |  |    --> Generates: Namespace, Secret, Deployment, Service YAML     |   |
   |  |                                                                   |   |
-  |  |  runtime.ApplyAsync(manifest)                                     |   |
+  |  |  runtime.ApplyAsync(artifact)                                     |   |
   |  |    --> Creates/updates K8s resources in cluster                   |   |
   |  +-------------------------------------------------------------------+   |
   |                                                                           |
@@ -827,7 +842,7 @@ The pipeline has three hard gates where execution stops on failure:
   | Trigger: File not found, invalid JSON, unknown resource type          |
   | What happens: Exception thrown with descriptive message               |
   | Example: "Unknown resource type: dynamodb"                            |
-  |          (ResourceJsonConverter doesn't know how to deserialize it)   |
+  |          (no IResourceProvider registered for that type)              |
   | Recovery: Fix the JSON and re-run                                     |
   +-----------------------------------------------------------------------+
 
@@ -840,16 +855,16 @@ The pipeline has three hard gates where execution stops on failure:
   |   - "Invalid Postgres size 'xxl'. Valid: xs, s, m, l, xl"            |
   |   - "Env var 'DB' references resource type 'mysql' not in resources" |
   |   - "Kafka topic must have at least 1 partition"                      |
-  |   - "Resource type 'redis' has no configured backend"  (warning)     |
+  |   - "Resource type 'redis' has no configured provisioner"  (warning)  |
   | Recovery: Fix manifest, run validate again                            |
   +-----------------------------------------------------------------------+
 
   Gate 3: APPLY
   +-----------------------------------------------------------------------+
-  | Trigger: Backend provisioning fails                                   |
+  | Trigger: Provisioner fails                                            |
   | What happens: InvalidOperationException thrown                        |
-  | Example: "Backend apply failed for postgres: Pulumi stack error..."   |
-  | Recovery: Check backend logs, fix infrastructure issue, re-apply     |
+  | Example: "Provisioner apply failed for postgres: Pulumi stack error."|
+  | Recovery: Check provisioner logs, fix infrastructure issue, re-apply |
   +-----------------------------------------------------------------------+
 ```
 
@@ -865,7 +880,8 @@ interfaces, records, and models. Any plugin author depends only on this package.
 **Plugin Contracts (interfaces)**:
 
 ```csharp
-// Every plugin implements this
+// Every plugin implements this and is decorated with [DeskribePlugin]
+[DeskribePlugin]
 public interface IPlugin
 {
     string Name { get; }
@@ -876,15 +892,15 @@ public interface IPlugin
 public interface IPluginRegistrar
 {
     void RegisterResourceProvider(IResourceProvider provider);
-    void RegisterBackendAdapter(IProvisioner adapter);
-    void RegisterRuntimeAdapter(IRuntimePlugin adapter);
-    void RegisterMessagingProvider(IMessagingProvider provider);
+    void RegisterProvisioner(IProvisioner provisioner);
+    void RegisterRuntimePlugin(IRuntimePlugin plugin);
 }
 
 // Handles a specific resource type (postgres, redis, kafka.messaging)
 public interface IResourceProvider
 {
     string ResourceType { get; }
+    ResourceSchema GetSchema();  // declares expected properties for this type
     Task<ValidationResult> ValidateAsync(ResourceDescriptor resource,
                                           ValidationContext ctx, CancellationToken ct);
     Task<ResourcePlanResult> PlanAsync(ResourceDescriptor resource,
@@ -896,6 +912,7 @@ public interface IProvisioner
 {
     string Name { get; }
     Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct);
+    Task GenerateArtifactsAsync(DeskribePlan plan, CancellationToken ct);  // deskribe generate
     Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct);
 }
 
@@ -904,58 +921,33 @@ public interface IRuntimePlugin
 {
     string Name { get; }
     Task<RuntimeArtifact> RenderAsync(WorkloadPlan workload, CancellationToken ct);
-    Task ApplyAsync(RuntimeArtifact manifest, CancellationToken ct);
+    Task ApplyAsync(RuntimeArtifact artifact, CancellationToken ct);
     Task DestroyAsync(string namespaceName, CancellationToken ct);
-}
-
-// Specialized for messaging systems with topics and ACLs
-public interface IMessagingProvider
-{
-    string ProviderType { get; }
-    Task<ValidationResult> ValidateAsync(ResourceDescriptor resource,
-                                          ValidationContext ctx, CancellationToken ct);
-    Task<ResourcePlanResult> PlanAsync(ResourceDescriptor resource,
-                                        PlanContext ctx, CancellationToken ct);
 }
 ```
 
 **Resource Schemas (records)**:
 
 ```csharp
-// Base class -- all resources have a type and optional size
-public abstract record ResourceDescriptor
+// Single record for all resource types -- no polymorphic hierarchy needed.
+// Type-specific properties (version, ha, topics, etc.) are captured in
+// ExtensionData via [JsonExtensionData]. Each IResourceProvider declares
+// a ResourceSchema via GetSchema() to validate these properties.
+public sealed record ResourceDescriptor
 {
-    public required string Type { get; init; }
-    public string? Size { get; init; }
+    public required string Type { get; init; }   // "postgres", "redis", "kafka.messaging"
+    public string? Size { get; init; }           // optional T-shirt size
+
+    [JsonExtensionData]
+    public Dictionary<string, JsonElement> Properties { get; init; } = new();
 }
 
-// Type-specific resources extend the base
-public sealed record ResourceDescriptor : ResourceDescriptor
+// ResourceSchema declares what properties a resource type expects.
+// Returned by IResourceProvider.GetSchema().
+public sealed record ResourceSchema
 {
-    public string? Version { get; init; }        // "14", "15", "16", "17"
-    public bool? Ha { get; init; }               // high availability
-    public string? Sku { get; init; }            // cloud-specific SKU
-}
-
-public sealed record ResourceDescriptor : ResourceDescriptor
-{
-    public string? Version { get; init; }
-    public bool? Ha { get; init; }
-    public int? MaxMemoryMb { get; init; }
-}
-
-public sealed record ResourceDescriptor : ResourceDescriptor
-{
-    public List<KafkaTopic> Topics { get; init; } = [];
-}
-
-public sealed record KafkaTopic
-{
-    public required string Name { get; init; }   // "payments.transactions"
-    public int? Partitions { get; init; }        // minimum 3 per platform policy
-    public int? RetentionHours { get; init; }    // 168 = 7 days
-    public List<string> Owners { get; init; } = [];     // WRITE access
-    public List<string> Consumers { get; init; } = [];  // READ access
+    public required string ResourceType { get; init; }
+    public List<ResourcePropertySchema> Properties { get; init; } = [];
 }
 ```
 
@@ -970,12 +962,13 @@ public sealed record DeskribeManifest
     public List<ServiceDefinition> Services { get; init; } = [];
 }
 
-// Platform team's base config
+// Platform team's base config (supports single-file and split-file formats)
 public sealed record PlatformConfig
 {
     public string? Organization { get; init; }
     public PlatformDefaults Defaults { get; init; } = new();
-    public Dictionary<string, string> Backends { get; init; } = new();
+    public RuntimeConfig RuntimeConfig { get; init; } = new();
+    public Dictionary<string, ProvisionerConfig> ProvisionerConfigs { get; init; } = new();
     public PlatformPolicies Policies { get; init; } = new();
 }
 
@@ -1016,24 +1009,23 @@ public sealed record ResourcePlanResult
 The Core library contains all the orchestration logic. Here is what each
 class does and how they connect.
 
-**ConfigLoader** -- JSON deserialization with polymorphic resources:
+**ConfigLoader** -- JSON deserialization with `[JsonExtensionData]`:
 
 ```
   ConfigLoader reads three files:
   +--------------------------------------------------+
   |                                                  |
   |  LoadManifestAsync("deskribe.json")              |
-  |    --> Reads file, deserializes with             |
-  |        ResourceJsonConverter                     |
-  |    --> Converter checks "type" field:            |
-  |        "postgres"        -> ResourceDescriptor     |
-  |        "redis"           -> ResourceDescriptor        |
-  |        "kafka.messaging" -> ResourceDescriptor|
-  |        anything else     -> JsonException        |
+  |    --> Reads file, deserializes resources as     |
+  |        ResourceDescriptor records                |
+  |    --> Type-specific properties (version, ha,    |
+  |        topics, etc.) are captured via            |
+  |        [JsonExtensionData] -- no polymorphic     |
+  |        converter needed                          |
   |    --> Returns DeskribeManifest                   |
   |                                                  |
   |  LoadPlatformConfigAsync("platform-config/")     |
-  |    --> Reads base.json from the directory        |
+  |    --> Reads base.json (or split-file format)    |
   |    --> Returns PlatformConfig                     |
   |                                                  |
   |  LoadEnvironmentConfigAsync("platform-config/",  |
@@ -1044,16 +1036,20 @@ class does and how they connect.
   +--------------------------------------------------+
 ```
 
-**MergeEngine** -- 3-layer merge algorithm:
+**MergeEngine** -- 3-layer nullable-based merge algorithm:
 
 ```
   Input:  DeskribeManifest + PlatformConfig + EnvironmentConfig + env + image
   Output: WorkloadPlan
 
+  PlatformDefaults properties are nullable (int?, string?, bool?).
+  Merging uses nullable-based semantics: if a layer's property is non-null,
+  it overrides the previous layer. No need to compare against defaults.
+
   Algorithm:
     1. Start with platform.Defaults for replicas, cpu, memory
-    2. Override with envConfig.Defaults if different from platform
-    3. Override with manifest.Services[0].Overrides[env] if set
+    2. Override with envConfig.Defaults where non-null
+    3. Override with manifest.Services[0].Overrides[env] where non-null
     4. Generate namespace: pattern.Replace("{app}",name).Replace("{env}",env)
     5. Attach env vars from manifest.Services[0].Env (still unresolved)
     6. Attach image from --image CLI flag
@@ -1084,7 +1080,7 @@ class does and how they connect.
 ```
   Checks:
     1. manifest.Name is not null or whitespace
-    2. Each resource type has a backend in platform.Backends
+    2. Each resource type has a provisioner in platform.Provisioners
        (warns if not, does not fail)
     3. Each @resource() reference in env vars points to a
        declared resource (fails if not)
@@ -1094,16 +1090,16 @@ class does and how they connect.
 
 ```
   Implements IPluginRegistrar.
-  Four dictionaries keyed by name/type:
+  Discovered via [DeskribePlugin] attribute + assembly scanning.
+  Three dictionaries keyed by name/type:
     _resourceProviders:  Dict<string, IResourceProvider>
-    _backendAdapters:    Dict<string, IProvisioner>
-    _runtimeAdapters:    Dict<string, IRuntimePlugin>
-    _messagingProviders: Dict<string, IMessagingProvider>
+    _provisioners:       Dict<string, IProvisioner>
+    _runtimePlugins:     Dict<string, IRuntimePlugin>
 
   RegisterPlugin(IPlugin) --> calls plugin.Register(this)
   GetResourceProvider("postgres") --> looks up in _resourceProviders
-  GetBackendAdapter("pulumi") --> looks up in _backendAdapters
-  GetRuntimeAdapter("kubernetes") --> looks up in _runtimeAdapters
+  GetProvisioner("pulumi") --> looks up in _provisioners
+  GetRuntimePlugin("kubernetes") --> looks up in _runtimePlugins
 ```
 
 **DeskribeEngine** -- Main orchestration:
@@ -1117,10 +1113,13 @@ class does and how they connect.
       --> Load -> Merge -> ProviderPlan -> Build DeskribePlan
 
     ApplyAsync(plan)
-      --> BackendApply -> ResolveRefs -> RuntimeRender -> RuntimeApply
+      --> ProvisionerApply -> ResolveRefs -> RuntimeRender -> RuntimeApply
+
+    GenerateAsync(plan)
+      --> ProvisionerGenerateArtifacts (deskribe generate command)
 
     DestroyAsync(manifestPath, platformPath, env)
-      --> Load -> RuntimeDestroy(namespace) -> BackendDestroy(app, env)
+      --> Load -> RuntimeDestroy(namespace) -> ProvisionerDestroy(app, env)
 ```
 
 ---
@@ -1170,31 +1169,28 @@ class does and how they connect.
 
 ```
   ResourceType: "kafka.messaging"
-  The KafkaPlugin registers TWO capabilities:
 
   KafkaResourceProvider (IResourceProvider):
+    GetSchema():
+      - Declares expected properties: topics[], etc.
+
     Validate:
       - Must have at least one topic
       - Each topic needs a name
       - Partitions >= 1 (if set)
       - RetentionHours >= 1 (if set)
       - Each topic needs at least one owner
-
-    Plan:
-      - Configuration: appName, environment, region, topics
-      - Outputs (pending placeholders until backend provisions):
-          endpoint: "<pending:{appName}-kafka>"
-          bootstrapServers: "<pending:{appName}-kafka-bootstrap>"
-      - Configuration includes topic details (name, partitions, retention)
-
-  KafkaMessagingProvider (IMessagingProvider):
-    Validate:
       - Platform minimum: 3 partitions per topic
 
     Plan:
+      - Configuration: appName, environment, region, topics
+      - Outputs (pending placeholders until provisioner provisions):
+          endpoint: "<pending:{appName}-kafka>"
+          bootstrapServers: "<pending:{appName}-kafka-bootstrap>"
+      - Configuration includes topic details (name, partitions, retention)
       - Generates ACL entries:
-        owners  --> WRITE permission
-        consumers --> READ permission
+          owners  --> WRITE permission
+          consumers --> READ permission
 ```
 
 **Pulumi Provisioner**:
@@ -1208,6 +1204,11 @@ class does and how they connect.
     - Sets stack config from DeskribePlan (appName, environment, region, resources)
     - Runs 'pulumi up' and captures stack outputs
     - Returns real infrastructure outputs (connection strings, endpoints)
+
+  GenerateArtifactsAsync(plan):
+    For `deskribe generate` command.
+    - Generates infrastructure-as-code artifacts without deploying
+    - Outputs Pulumi project files, stack configs, etc.
 
   DestroyAsync(appName, environment, platform):
     Requires pulumiProjectDir in platform defaults (throws if not set).
@@ -1281,7 +1282,11 @@ with zero Docker Compose.
                                    .WithLifetime(Persistent)    + Persistent volume
 ```
 
-**Dynamic resource creation flow:**
+**Dynamic resource creation flow (IAspireProjection system):**
+
+Instead of a switch/case on resource types, each resource type provides an
+`IAspireProjection` implementation that knows how to project itself into Aspire.
+This makes the system extensible without modifying the core.
 
 ```
   AppHost starts
@@ -1290,40 +1295,40 @@ with zero Docker Compose.
   builder.AddDeskribeManifest("path/to/deskribe.json")
        |
        |  1. Reads and deserializes the manifest
-       |  2. Iterates manifest.Resources
-       |  3. For each resource, switches on type:
+       |  2. Iterates manifest.Resources (ResourceDescriptor records)
+       |  3. For each resource, looks up IAspireProjection by type:
        |
-       +---> type = "postgres"
+       +---> IAspireProjection for "postgres"
        |       |
        |       v
        |     AddPostgres("{app}-postgres")
-       |       .WithImageTag("16")             <-- from resource.Version
+       |       .WithImageTag("16")             <-- from resource.Properties["version"]
        |       .WithPgAdmin()                  <-- always on in local dev
        |       .WithLifetime(Persistent)       <-- always on in local dev
        |       .AddDatabase("{app}-db")
        |       |
-       |       +---> Registers in ResourceDescriptorMap
+       |       +---> Registers in DeskribeResourceMap
        |
-       +---> type = "redis"
+       +---> IAspireProjection for "redis"
        |       |
        |       v
        |     AddRedis("{app}-redis")
        |       .WithRedisInsight()
        |       .WithLifetime(Persistent)
        |       |
-       |       +---> Registers in ResourceDescriptorMap
+       |       +---> Registers in DeskribeResourceMap
        |
-       +---> type = "kafka.messaging"
+       +---> IAspireProjection for "kafka.messaging"
                |
                v
              AddKafka("{app}-kafka")
                .WithKafkaUI()
                .WithLifetime(Persistent)
                |
-               +---> Registers in ResourceDescriptorMap
+               +---> Registers in DeskribeResourceMap
        |
        v
-  Returns ResourceDescriptorMap
+  Returns DeskribeResourceMap
        |
        v
   builder.AddProject<Projects.MyService>("my-service")
@@ -1423,7 +1428,7 @@ ConfigLoader reads three files:
           ResourceDescriptor { Type: "postgres", Size: "m" },
           ResourceDescriptor { Type: "redis" },
           ResourceDescriptor { Type: "kafka.messaging",
-            Topics: [{ Name: "payments.transactions", Partitions: 6, ... }] }
+            Properties: { topics: [{ Name: "payments.transactions", Partitions: 6, ... }] } }
         ],
         Services: [{
           Env: {
@@ -1443,7 +1448,7 @@ ConfigLoader reads three files:
         Defaults: { Runtime: "kubernetes", Region: "westeurope",
                     Replicas: 2, Cpu: "250m", Memory: "512Mi",
                     NamespacePattern: "{app}-{env}" },
-        Backends: { "postgres": "pulumi", "redis": "pulumi",
+        ProvisionerConfigs: { "postgres": "pulumi", "redis": "pulumi",
                     "kafka.messaging": "pulumi" },
         Policies: { AllowedRegions: ["westeurope","northeurope"],
                     EnforceTls: true }
@@ -1545,12 +1550,12 @@ For each resource, the engine calls the provider's PlanAsync:
 ```
 STEP 5: APPLY INFRASTRUCTURE
 =============================
-For each resource plan, the engine looks up the backend and calls ApplyAsync:
+For each resource plan, the engine looks up the provisioner and calls ApplyAsync:
 
-  platform.Backends["postgres"] = "pulumi"
-  backend = PluginRegistry.GetBackendAdapter("pulumi") --> PulumiBackendAdapter
+  platform.ProvisionerConfigs["postgres"] = "pulumi"
+  provisioner = PluginRegistry.GetProvisioner("pulumi") --> PulumiProvisioner
 
-  PulumiBackendAdapter.ApplyAsync(plan):
+  PulumiProvisioner.ApplyAsync(plan):
     [Pulumi] Using Local Program mode with project: infra/
     [Pulumi] Running 'pulumi up' for stack payments-api-prod...
     ... (Pulumi provisions Azure resources: Resource Group, PostgreSQL, Redis, etc.)
@@ -1599,7 +1604,7 @@ ResourceReferenceResolver.ResolveReferences() replaces @resource() expressions:
 ```
 STEP 7: DEPLOY TO KUBERNETES
 =============================
-KubernetesRuntimeAdapter.RenderAsync(resolvedWorkload) generates YAML:
+KubernetesRuntimePlugin.RenderAsync(resolvedWorkload) generates YAML:
 
   Resource 1: Namespace
     apiVersion: v1
@@ -1668,7 +1673,7 @@ KubernetesRuntimeAdapter.RenderAsync(resolvedWorkload) generates YAML:
         targetPort: 8080
         name: http
 
-KubernetesRuntimeAdapter.ApplyAsync(manifest):
+KubernetesRuntimePlugin.ApplyAsync(artifact):
   For each resource:
     Try to read it from cluster.
     If it exists --> update (patch/replace).

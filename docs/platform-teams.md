@@ -116,13 +116,13 @@ is the translation layer.
 ## 2. Setting Up the Platform Config Repository
 
 The platform config repo is owned by the platform team. Developers never modify it.
-It defines organizational defaults, per-environment overrides, backend mappings, and policies.
+It defines organizational defaults, per-environment overrides, provisioner mappings, and policies.
 
 ### Directory structure
 
 ```
 platform-config/
-  base.json                 # Organization-wide defaults and backend mappings
+  base.json                 # Organization-wide defaults and provisioner mappings
   envs/
     dev.json                # Development environment overrides
     staging.json            # Staging environment overrides
@@ -145,10 +145,20 @@ platform-config/
     "namespacePattern": "{app}-{env}"
   },
 
+  "runtime": {
+    "name": "kubernetes",
+    "config": {}
+  },
+
   "provisioners": {
     "postgres": "pulumi",
     "redis": "pulumi",
     "kafka.messaging": "pulumi"
+  },
+
+  "provisionerConfigs": {
+    "pulumi": { "projectDir": "./infra/pulumi" },
+    "terraform": { "workspace": "default", "modulesRoot": "./infra/terraform/modules" }
   },
 
   "policies": {
@@ -163,14 +173,15 @@ Field-by-field breakdown:
 | Field | Type | Purpose |
 |-------|------|---------|
 | `organization` | `string` | Your org name. Used for naming, tagging, and namespace prefixes. |
-| `defaults.runtime` | `string` | Which `IRuntimePlugin` to use. Maps to adapter `Name` property (e.g., `"kubernetes"`). |
-| `defaults.region` | `string` | Default cloud region for all resources. |
-| `defaults.replicas` | `int` | Default replica count for workloads. Developers can override per-env. |
-| `defaults.cpu` | `string` | Default CPU request/limit (K8s resource quantity format). |
-| `defaults.memory` | `string` | Default memory request/limit (K8s resource quantity format). |
-| `defaults.namespacePattern` | `string` | Template for K8s namespace. `{app}` and `{env}` are replaced at plan time. |
+| `defaults.region` | `string?` | Default cloud region for all resources. Nullable --- only overrides when set. |
+| `defaults.replicas` | `int?` | Default replica count for workloads. Developers can override per-env. Nullable --- only overrides when set. |
+| `defaults.cpu` | `string?` | Default CPU request/limit (K8s resource quantity format). Nullable --- only overrides when set. |
+| `defaults.memory` | `string?` | Default memory request/limit (K8s resource quantity format). Nullable --- only overrides when set. |
+| `defaults.namespacePattern` | `string?` | Template for K8s namespace. `{app}` and `{env}` are replaced at plan time. Nullable --- only overrides when set. |
 | `defaults.ha` | `bool?` | Whether high-availability is enabled. Typically `null` in base (off), `true` in prod. |
-| `backends` | `Dictionary<string, string>` | Maps resource types to provisioner names. See Section 3. |
+| `runtime` | `object` | The runtime plugin to use. `name` maps to an `IRuntimePlugin` `Name` property (e.g., `"kubernetes"`). `config` holds runtime-specific settings. |
+| `provisioners` | `Dictionary<string, string>` | Maps resource types to provisioner names. See Section 3. |
+| `provisionerConfigs` | `Dictionary<string, object>` | Provisioner-specific configuration (e.g., Pulumi `projectDir`, Terraform `workspace` and `modulesRoot`). |
 | `policies.allowedRegions` | `string[]` | Regions developers are allowed to target. Enforced by `PolicyValidator`. |
 | `policies.enforceTLS` | `bool` | Whether TLS is mandatory for all resources. |
 
@@ -220,7 +231,7 @@ The dev environment typically mirrors base defaults --- small resources, no HA.
 | `defaults.replicas` | Prod gets more replicas (3 instead of base 2). |
 | `defaults.cpu` | Prod gets more CPU. |
 | `defaults.memory` | Prod gets more memory. |
-| `defaults.ha` | High-availability is enabled in prod. Backends use this to enable replicas, failover, etc. |
+| `defaults.ha` | High-availability is enabled in prod. Provisioners use this to enable replicas, failover, etc. |
 | `alertRouting` | Routing rules for alerts. Keyed by severity level. |
 
 ### Organizing for multiple environments
@@ -287,9 +298,9 @@ deskribe validate \
 
 ---
 
-## 3. Mapping Resources to Backends
+## 3. Mapping Resources to Provisioners
 
-The `backends` section in `base.json` is the routing table. It tells Deskribe:
+The `provisioners` section in `base.json` is the routing table. It tells Deskribe:
 "When a developer asks for resource type X, use provisioner Y to provision it."
 
 ### How the mapping works
@@ -311,9 +322,9 @@ Reading this out loud:
 - `"redis": "pulumi"` --- Same for Redis.
 - `"kafka.messaging": "pulumi"` --- Same for Kafka messaging.
 
-### Mixing backends
+### Mixing provisioners
 
-You are not limited to one backend. Different resource types can use different IaC tools:
+You are not limited to one provisioner. Different resource types can use different IaC tools:
 
 ```json
 {
@@ -333,37 +344,37 @@ This means:
 This is common in organizations migrating from one tool to another, or where certain
 resources are better supported by specific tools.
 
-### How the engine resolves backends
+### How the engine resolves provisioners
 
 When `DeskribeEngine.ApplyAsync` runs, it iterates over each resource plan and looks up
-the backend:
+the provisioner:
 
 ```
 For each ResourcePlan in the DeskribePlan:
     1. Look up: platform.Provisioners[resourcePlan.ResourceType]
        e.g., "postgres" -> "pulumi"
 
-    2. Get the adapter: pluginHost.GetBackendAdapter("pulumi")
+    2. Get the provisioner: pluginRegistry.GetProvisioner("pulumi")
        Returns the registered IProvisioner with Name == "pulumi"
 
-    3. Call: backend.ApplyAsync(plan, ct)
-       The adapter provisions the resource using its IaC tool
+    3. Call: provisioner.ApplyAsync(plan, ct)
+       The provisioner provisions the resource using its IaC tool
 
     4. Capture outputs: result.ResourceOutputs
        e.g., { "postgres": { "connectionString": "Host=..." } }
 ```
 
 ```
-  deskribe.json                  base.json                  Adapter Registry
-  +----------------+             +----------------+         +------------------+
-  | resources:     |             | backends:      |         | "pulumi" ->      |
-  |  - postgres    +---lookup--->|  postgres:     +--get--->| PulumiBackend    |
-  |  - redis       |             |    "pulumi"    |         |   Adapter        |
-  |  - kafka       |             |  redis:        |         |                  |
-  +----------------+             |    "pulumi"    |         | "terraform" ->   |
-                                 |  kafka:        |         | TerraformBackend |
-                                 |    "pulumi"    |         |   Adapter        |
-                                 +----------------+         +------------------+
+  deskribe.json                  base.json                  Plugin Registry
+  +----------------+             +------------------+       +------------------+
+  | resources:     |             | provisioners:    |       | "pulumi" ->      |
+  |  - postgres    +---lookup--->|  postgres:       +--get->| PulumiProvisioner|
+  |  - redis       |             |    "pulumi"      |       |                  |
+  |  - kafka       |             |  redis:          |       | "terraform" ->   |
+  +----------------+             |    "pulumi"      |       | TerraformProv.   |
+                                 |  kafka:          |       |                  |
+                                 |    "pulumi"      |       +------------------+
+                                 +------------------+
 ```
 
 ### Writing a custom provisioner
@@ -386,14 +397,14 @@ public record ProvisionResult
 }
 ```
 
-> **Note:** The adapter code below is a **complete example you copy and customize**.
+> **Note:** The provisioner code below is a **complete example you copy and customize**.
 > It is not built into Deskribe. Methods like `MapToModule()`, `GenerateTfVars()`, and
 > `RunTerraform()` are private helpers that your platform team implements.
 
-To create a custom adapter that wraps your existing Terraform modules:
+To create a custom provisioner that wraps your existing Terraform modules:
 
 ```csharp
-public class TerraformBackendAdapter : IProvisioner
+public class TerraformProvisioner : IProvisioner
 {
     public string Name => "terraform";
 
@@ -504,11 +515,11 @@ Register it via a plugin:
 ```csharp
 public class TerraformPlugin : IPlugin
 {
-    public string Name => "terraform-backend";
+    public string Name => "terraform-provisioner";
 
     public void Register(IPluginRegistrar registrar)
     {
-        registrar.RegisterBackendAdapter(new TerraformBackendAdapter());
+        registrar.RegisterProvisioner(new TerraformProvisioner());
     }
 }
 ```
@@ -523,11 +534,11 @@ public class TerraformPlugin : IPlugin
   DeskribePlan
        |
        v
-  TerraformBackendAdapter
+  TerraformProvisioner
        |
        |  1. Map resource type to module path
        |  2. Generate terraform.tfvars.json
-       |  3. terraform init -backend-config=...
+       |  3. terraform init
        |  4. terraform apply -auto-approve
        |  5. terraform output -json
        |
@@ -634,14 +645,14 @@ output "port" {
 }
 ```
 
-### The Terraform adapter translates DeskribePlan to tfvars
+### The Terraform provisioner translates DeskribePlan to tfvars
 
 ```csharp
-public class TerraformBackendAdapter : IProvisioner
+public class TerraformProvisioner : IProvisioner
 {
     private readonly string _modulesRoot;
 
-    public TerraformBackendAdapter(string modulesRoot)
+    public TerraformProvisioner(string modulesRoot)
     {
         _modulesRoot = modulesRoot;  // e.g., "/infra/terraform/modules"
     }
@@ -679,7 +690,7 @@ public class TerraformBackendAdapter : IProvisioner
             await File.WriteAllTextAsync(tfvarsPath, tfvarsJson, ct);
 
             // Step 3: terraform init
-            await RunProcess("terraform", $"init -backend-config=key={plan.AppName}/{plan.Environment}/{resourcePlan.ResourceType}", modulePath, ct);
+            await RunProcess("terraform", $"init", modulePath, ct);
 
             // Step 4: terraform apply
             await RunProcess("terraform", "apply -auto-approve", modulePath, ct);
@@ -731,11 +742,11 @@ public class TerraformBackendAdapter : IProvisioner
        v
   DeskribeEngine.ApplyAsync()
        |
-       |  Looks up: backends["postgres"] -> "terraform"
-       |  Gets adapter: pluginHost.GetBackendAdapter("terraform")
+       |  Looks up: provisioners["postgres"] -> "terraform"
+       |  Gets provisioner: pluginRegistry.GetProvisioner("terraform")
        |
        v
-  TerraformBackendAdapter.ApplyAsync()
+  TerraformProvisioner.ApplyAsync()
        |
        |  1. Module path: modules/azure-postgres/
        |  2. Generates terraform.tfvars.json:
@@ -771,11 +782,11 @@ public class TerraformBackendAdapter : IProvisioner
 
 ## 5. Integrating with Existing Pulumi Programs
 
-> **Note:** Deskribe ships with a built-in `PulumiBackendAdapter` that requires `pulumiProjectDir`
+> **Note:** Deskribe ships with a built-in `PulumiProvisioner` that requires `projectDir`
 > to be set in platform defaults. It uses the Pulumi Automation API to run a real Pulumi project
 > (Local Program mode).
 >
-> The example below shows how to write your **own** adapter pointing to multiple Pulumi program
+> The example below shows how to write your **own** provisioner pointing to multiple Pulumi program
 > directories. Methods like `MapResourceToProgram()` are private helpers you implement.
 
 The Pulumi provisioner uses the [Pulumi Automation API](https://www.pulumi.com/docs/using-pulumi/automation-api/)
@@ -788,7 +799,7 @@ but uses `Pulumi.Automation.LocalWorkspace` instead of CLI calls.
   DeskribePlan
        |
        v
-  PulumiBackendAdapter
+  PulumiProvisioner
        |
        |  1. Map resource type to Pulumi program path
        |  2. Set stack config from DeskribePlan
@@ -803,16 +814,16 @@ but uses `Pulumi.Automation.LocalWorkspace` instead of CLI calls.
   Cloud Provider API
 ```
 
-### Pulumi adapter using Automation API
+### Pulumi provisioner using Automation API
 
 ```csharp
 using Pulumi.Automation;
 
-public class PulumiBackendAdapter : IProvisioner
+public class PulumiProvisioner : IProvisioner
 {
     private readonly string _programsRoot;
 
-    public PulumiBackendAdapter(string programsRoot)
+    public PulumiProvisioner(string programsRoot)
     {
         _programsRoot = programsRoot;  // e.g., "/infra/pulumi/programs"
     }
@@ -892,7 +903,7 @@ public class PulumiBackendAdapter : IProvisioner
   DeskribePlan (for payments-api, prod)
        |
        v
-  PulumiBackendAdapter.ApplyAsync()
+  PulumiProvisioner.ApplyAsync()
        |
        |  Stack: "payments-api-prod"
        |  Program: infra/pulumi/programs/postgres/
@@ -920,19 +931,19 @@ public class PulumiBackendAdapter : IProvisioner
 
 ## 6. Runtime Integration --- Kubernetes
 
-The built-in `KubernetesRuntimeAdapter` uses the official
+The built-in `KubernetesRuntimePlugin` uses the official
 [KubernetesClient C# SDK](https://github.com/kubernetes-client/csharp) (`k8s` NuGet
 package) to generate and apply Kubernetes resources.
 
-### What the K8s adapter generates
+### What the K8s runtime plugin generates
 
-For every workload, the adapter generates four resources:
+For every workload, the runtime plugin generates four resources:
 
 ```
   WorkloadPlan
        |
        v
-  KubernetesRuntimeAdapter.RenderAsync()
+  KubernetesRuntimePlugin.RenderAsync()
        |
        +---> Namespace       (e.g., payments-api-prod)
        |       Labels: app.kubernetes.io/managed-by = deskribe
@@ -952,9 +963,9 @@ For every workload, the adapter generates four resources:
                Selector: app = payments-api
 ```
 
-### How the adapter applies resources
+### How the runtime plugin applies resources
 
-The adapter uses a create-or-update pattern. For each resource:
+The runtime plugin uses a create-or-update pattern. For each resource:
 
 ```
   Try to read the existing resource
@@ -966,12 +977,12 @@ The adapter uses a create-or-update pattern. For each resource:
 
 This is idempotent. Running `deskribe apply` multiple times is safe.
 
-### Extending the K8s adapter
+### Extending the K8s runtime plugin
 
-To add Ingress, NetworkPolicy, or other resources, extend the adapter:
+To add Ingress, NetworkPolicy, or other resources, extend the runtime plugin:
 
 ```csharp
-public class ExtendedKubernetesRuntimeAdapter : KubernetesRuntimeAdapter
+public class ExtendedKubernetesRuntimePlugin : KubernetesRuntimePlugin
 {
     public override async Task<WorkloadManifest> RenderAsync(WorkloadPlan workload, CancellationToken ct)
     {
@@ -1077,7 +1088,7 @@ public class ExtendedKubernetesRuntimeAdapter : KubernetesRuntimeAdapter
 For organizations using Azure Container Apps instead of Kubernetes, you implement a
 custom `IRuntimePlugin`.
 
-### What a custom Azure Container Apps adapter looks like
+### What a custom Azure Container Apps runtime plugin looks like
 
 ```csharp
 using Azure.ResourceManager;
@@ -1085,13 +1096,13 @@ using Azure.ResourceManager.AppContainers;
 using Azure.ResourceManager.AppContainers.Models;
 using Azure.Identity;
 
-public class AzureContainerAppsRuntimeAdapter : IRuntimePlugin
+public class AzureContainerAppsRuntimePlugin : IRuntimePlugin
 {
     private readonly string _subscriptionId;
     private readonly string _resourceGroupName;
     private readonly string _environmentName;
 
-    public AzureContainerAppsRuntimeAdapter(
+    public AzureContainerAppsRuntimePlugin(
         string subscriptionId,
         string resourceGroupName,
         string environmentName)
@@ -1176,8 +1187,8 @@ public class AzureContainerAppsPlugin : IPlugin
 
     public void Register(IPluginRegistrar registrar)
     {
-        registrar.RegisterRuntimeAdapter(
-            new AzureContainerAppsRuntimeAdapter(
+        registrar.RegisterRuntimePlugin(
+            new AzureContainerAppsRuntimePlugin(
                 subscriptionId: Environment.GetEnvironmentVariable("AZURE_SUBSCRIPTION_ID")!,
                 resourceGroupName: "my-rg",
                 environmentName: "my-aca-env"));
@@ -1202,19 +1213,19 @@ Then set the runtime in your platform config:
 For organizations running on AWS Elastic Container Service (ECS), you implement a
 custom `IRuntimePlugin` using the `AWSSDK.ECS` package.
 
-### What a custom AWS ECS adapter looks like
+### What a custom AWS ECS runtime plugin looks like
 
 ```csharp
 using Amazon.ECS;
 using Amazon.ECS.Model;
 
-public class AwsEcsRuntimeAdapter : IRuntimePlugin
+public class AwsEcsRuntimePlugin : IRuntimePlugin
 {
     private readonly string _clusterName;
     private readonly string _vpcSubnets;
     private readonly string _securityGroup;
 
-    public AwsEcsRuntimeAdapter(string clusterName, string vpcSubnets, string securityGroup)
+    public AwsEcsRuntimePlugin(string clusterName, string vpcSubnets, string securityGroup)
     {
         _clusterName = clusterName;
         _vpcSubnets = vpcSubnets;
@@ -1338,7 +1349,7 @@ public class AwsEcsRuntimeAdapter : IRuntimePlugin
 ```
 
 Note the unit conversion: Kubernetes uses `500m` (millicores) and `1Gi`, while
-ECS Fargate uses `512` (CPU units) and `1024` (MB). Your adapter handles this mapping.
+ECS Fargate uses `512` (CPU units) and `1024` (MB). Your runtime plugin handles this mapping.
 
 ---
 
@@ -1363,7 +1374,7 @@ config before any infrastructure is touched.
        |
        +---> For each resource:
        |       Does platform.Provisioners have a mapping for this resource type?
-       |       Warning if not: "Resource type 'xyz' has no configured backend"
+       |       Warning if not: "Resource type 'xyz' has no configured provisioner"
        |
        +---> For each service env var:
        |       If it uses @resource(type), does that resource type exist
@@ -1472,7 +1483,7 @@ When a developer writes:
 ```
 
 The resource provider (e.g., `PostgresResourceProvider`) maps `"m"` to a concrete SKU
-based on the target backend. This mapping lives inside the provisioner or resource
+based on the target provisioner. This mapping lives inside the provisioner or resource
 provider --- NOT in the developer's manifest.
 
 ### Size mapping examples
@@ -1499,9 +1510,9 @@ public class PostgresResourceProvider : IResourceProvider
     {
         var postgres = (PostgresResource)resource;
 
-        // Map abstract size to concrete SKU based on backend
-        var backendName = ctx.Platform.Provisioners.GetValueOrDefault("postgres", "pulumi");
-        var sku = MapSizeToSku(postgres.Size ?? "s", backendName, ctx.Environment);
+        // Map abstract size to concrete SKU based on provisioner
+        var provisionerName = ctx.Platform.Provisioners.GetValueOrDefault("postgres", "pulumi");
+        var sku = MapSizeToSku(postgres.Size ?? "s", provisionerName, ctx.Environment);
 
         // Determine HA from environment config
         var ha = ctx.EnvironmentConfig.Defaults.Ha ?? false;
@@ -1525,8 +1536,8 @@ public class PostgresResourceProvider : IResourceProvider
         });
     }
 
-    private static string MapSizeToSku(string size, string backend, string environment) =>
-        (size, backend) switch
+    private static string MapSizeToSku(string size, string provisioner, string environment) =>
+        (size, provisioner) switch
         {
             ("xs", "terraform") => "B_Standard_B1ms",     // Azure via Terraform
             ("s",  "terraform") => "B_Standard_B1ms",
@@ -1684,7 +1695,7 @@ Uses the `aws-ecs` runtime plugin. Provisioners provision RDS PostgreSQL and Ela
   deskribe apply --env dev --platform ./platform-config
        |
        |  Loads envs/dev.json -> runtime = "kubernetes"
-       |  Backend: "pulumi" -> provisions Postgres/Redis via Pulumi
+       |  Provisioner: "pulumi" -> provisions Postgres/Redis via Pulumi
        |  Runtime: "kubernetes" -> generates K8s YAML, applies to local cluster
        v
   Result: Postgres + Redis containers on local K8s
@@ -1692,7 +1703,7 @@ Uses the `aws-ecs` runtime plugin. Provisioners provision RDS PostgreSQL and Ela
   deskribe apply --env staging --platform ./platform-config
        |
        |  Loads envs/staging.json -> runtime = "azure-container-apps"
-       |  Backend: "pulumi" -> provisions Azure DB for PostgreSQL, Azure Cache
+       |  Provisioner: "pulumi" -> provisions Azure DB for PostgreSQL, Azure Cache
        |  Runtime: "azure-container-apps" -> deploys as Azure Container App
        v
   Result: Managed Azure resources + Container App
@@ -1700,7 +1711,7 @@ Uses the `aws-ecs` runtime plugin. Provisioners provision RDS PostgreSQL and Ela
   deskribe apply --env prod --platform ./platform-config
        |
        |  Loads envs/prod.json -> runtime = "aws-ecs"
-       |  Backend: "pulumi" -> provisions RDS PostgreSQL, ElastiCache
+       |  Provisioner: "pulumi" -> provisions RDS PostgreSQL, ElastiCache
        |  Runtime: "aws-ecs" -> deploys as ECS Fargate service
        v
   Result: Managed AWS resources + ECS service, HA enabled
@@ -1764,7 +1775,7 @@ For organizations using Vault, the provisioner can write secrets to Vault
 instead of (or in addition to) passing them directly:
 
 ```csharp
-public class VaultAwareBackendAdapter : IProvisioner
+public class VaultAwareProvisioner : IProvisioner
 {
     private readonly IProvisioner _inner;
     private readonly IVaultClient _vault;
@@ -1821,12 +1832,12 @@ public async Task ApplyAsync(WorkloadManifest manifest, CancellationToken ct)
   Role                      Can do                              Cannot do
   +------------------------+-----------------------------------+---------------------------+
   | Developer              | deskribe validate                 | Modify platform config    |
-  |                        | deskribe plan                     | Change backends mapping   |
+  |                        | deskribe plan                     | Change provisioner mapping |
   |                        | deskribe apply (via CI only)      | Override policies          |
   |                        | Write deskribe.json               | Access other apps' secrets|
   +------------------------+-----------------------------------+---------------------------+
   | Platform Engineer      | Modify base.json, envs/*.json     | Modify deskribe.json      |
-  |                        | Write backend/runtime plugins    | (that's the dev's file)   |
+  |                        | Write provisioners/runtime plugins    | (that's the dev's file)   |
   |                        | Define policies                   |                           |
   |                        | Manage the IaC modules/programs   |                           |
   +------------------------+-----------------------------------+---------------------------+
@@ -1981,7 +1992,7 @@ variable. For Pulumi, it sets `azure:location` in stack config.
                             +-----------------------+-----------------------+
                             |                                               |
                             v                                               v
-                  Terraform adapter                              Pulumi adapter
+                  Terraform provisioner                            Pulumi provisioner
                   tfvars["region"] = "eastus2"                   stack.SetConfig("azure:location", "eastus2")
                             |                                               |
                             v                                               v
@@ -2074,7 +2085,7 @@ deskribe apply --env prod-eu --platform ./platform-config
   (base region overridden)                        (base region kept)
          |                                                |
          v                                                v
-  Backend provisions in eastus2                   Backend provisions in westeurope
+  Provisioner runs in eastus2                     Provisioner runs in westeurope
   - Azure DB for PostgreSQL (eastus2)             - Azure DB for PostgreSQL (westeurope)
   - Azure Cache for Redis (eastus2)               - Azure Cache for Redis (westeurope)
          |                                                |
@@ -2089,7 +2100,7 @@ The developer's `deskribe.json` is identical for both regions. Only the `--env` 
 
 ## Quick Reference: Interface Contracts
 
-For platform engineers writing custom adapters, here are the core interfaces:
+For platform engineers writing custom provisioners and runtime plugins, here are the core interfaces:
 
 ### IProvisioner --- Bridge to your IaC
 
@@ -2126,8 +2137,8 @@ public interface IPlugin
 public interface IPluginRegistrar
 {
     void RegisterResourceProvider(IResourceProvider provider);
-    void RegisterBackendAdapter(IProvisioner adapter);
-    void RegisterRuntimeAdapter(IRuntimePlugin adapter);
+    void RegisterProvisioner(IProvisioner provisioner);
+    void RegisterRuntimePlugin(IRuntimePlugin runtimePlugin);
     void RegisterMessagingProvider(IMessagingProvider provider);
 }
 ```
@@ -2174,7 +2185,7 @@ What developers CANNOT override (platform-level only):
 ```
   runtime           - kubernetes vs ACA vs ECS (platform decides)
   region            - westeurope vs us-east-1 (governance policy)
-  backends          - Pulumi vs Terraform (platform decides)
+  provisioners      - Pulumi vs Terraform (platform decides)
   namespacePattern  - how namespaces are structured (platform decides)
   policies          - TLS, allowed regions (security/compliance)
 ```
