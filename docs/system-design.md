@@ -120,7 +120,7 @@ The manifest is the developer's single file. Everything starts here.
   // Deskribe finds the right plugin for each "type".
   "resources": [
     {
-      "type": "postgres",          // Matched to ResourceDescriptorProvider
+      "type": "postgres",          // Matched to PostgresResourceProvider
       "size": "m",                 // Provider-specific: xs, s, m, l, xl
       "version": "16"             // Used by both prod (Azure DB v16) and local dev (image tag)
     },
@@ -238,7 +238,7 @@ The resolution happens at two different times depending on the context:
   |                   | "connectionString" is listed as a planned   |
   |                   | output with a placeholder value.            |
   +-------------------+---------------------------------------------+
-  | Apply             | Backend provisions Postgres, returns        |
+  | Apply             | Provisioner provisions Postgres, returns    |
   |                   | actual connection string. Resolver replaces |
   |                   | @resource(postgres).connectionString with   |
   |                   | "Host=10.0.1.5;Port=5432;Database=..."      |
@@ -657,7 +657,7 @@ The resolver checks that `"postgres"` exists in the manifest's declared resource
 
 **Step 3: Planning (during `deskribe plan`)**
 
-The ResourceDescriptorProvider generates planned outputs:
+The PostgresResourceProvider generates planned outputs:
 
 ```
 ResourcePlanResult {
@@ -679,10 +679,10 @@ The planned outputs show what the reference *will* resolve to.
 
 **Step 4: Resolution (during `deskribe apply`)**
 
-After the backend provisions the resource and returns real outputs:
+After the provisioner provisions the resource and returns real outputs:
 
 ```
-  Backend returns:
+  Provisioner returns:
   resourceOutputs = {
       "postgres": {
           "connectionString": "Host=10.0.1.5;Port=5432;Database=payments-api;
@@ -1141,7 +1141,7 @@ class does and how they connect.
     - Defaults: size="s", version="16"
     - HA comes from resource.Ha ?? envConfig.Ha ?? false
     - Configuration: version, size, ha, appName, environment, region
-    - Outputs (pending placeholders until backend provisions):
+    - Outputs (pending placeholders until provisioner provisions):
         connectionString: "<pending:{appName}-postgres>"
         host: "<pending:{appName}-postgres-host>"
         port: "5432"
@@ -1159,13 +1159,13 @@ class does and how they connect.
   Plan:
     - HA comes from resource.Ha ?? envConfig.Ha ?? false
     - Configuration: size, ha, appName, environment, region
-    - Outputs (pending placeholders until backend provisions):
+    - Outputs (pending placeholders until provisioner provisions):
         endpoint: "<pending:{appName}-redis>"
         host: "<pending:{appName}-redis-host>"
         port: "6379"
 ```
 
-**Kafka Resource Provider + Messaging Provider**:
+**Kafka Resource Provider**:
 
 ```
   ResourceType: "kafka.messaging"
@@ -1332,7 +1332,7 @@ This makes the system extensible without modifying the core.
        |
        v
   builder.AddProject<Projects.MyService>("my-service")
-    .WithResourceDescriptors(resources)
+    .WithDeskribeResources(resources)
        |
        |  For each resource in map:
        |    .WithReference(resource)     <-- injects connection string
@@ -1361,7 +1361,7 @@ var resources = builder.AddDeskribeManifest(manifestPath);
 
 // Wire web dashboard with all resources
 var web = builder.AddProject<Projects.Deskribe_Web>("deskribe-web")
-    .WithResourceDescriptors(resources)
+    .WithDeskribeResources(resources)
     .WithExternalHttpEndpoints();
 
 builder.Build().Run();
@@ -1387,7 +1387,7 @@ The platform team has this in their repo:
 
 ```
 platform-config/
-  base.json            (org defaults, backend mappings, policies)
+  base.json            (org defaults, provisioner mappings, policies)
   envs/
     dev.json           (dev overrides)
     prod.json          (prod overrides: replicas=3, cpu=500m, memory=1Gi, ha=true)
@@ -1495,7 +1495,7 @@ STEP 4: PLAN RESOURCES
 ======================
 For each resource, the engine calls the provider's PlanAsync:
 
-  (a) ResourceDescriptorProvider.PlanAsync():
+  (a) PostgresResourceProvider.PlanAsync():
       ResourcePlanResult {
         ResourceType: "postgres"
         Action: "create"
@@ -1514,7 +1514,7 @@ For each resource, the engine calls the provider's PlanAsync:
         }
       }
 
-  (b) ResourceDescriptorProvider.PlanAsync():
+  (b) RedisResourceProvider.PlanAsync():
       ResourcePlanResult {
         ResourceType: "redis"
         Action: "create"

@@ -533,6 +533,10 @@ public class TerraformPlugin : IPlugin
 
 ## 4. Integrating with Existing Terraform Repositories
 
+> **Note:** Deskribe supports both **Terraform** and **Pulumi** as built-in provisioners.
+> Terraform support uses the Terraform CLI, while Pulumi support uses the Automation API.
+> You can also write custom provisioners for other IaC tools by implementing `IProvisioner`.
+
 ### Architecture
 
 ```
@@ -1205,8 +1209,9 @@ Then set the runtime in your platform config:
 
 ```json
 {
-  "defaults": {
-    "runtime": "azure-container-apps"
+  "runtime": {
+    "name": "azure-container-apps",
+    "config": {}
   }
 }
 ```
@@ -1649,11 +1654,14 @@ The platform config controls the target per environment:
 {
   "name": "dev",
   "defaults": {
-    "runtime": "kubernetes",
     "region": "local",
     "replicas": 1,
     "cpu": "100m",
     "memory": "256Mi"
+  },
+  "runtime": {
+    "name": "kubernetes",
+    "config": {}
   }
 }
 ```
@@ -1666,12 +1674,15 @@ Uses the `kubernetes` runtime plugin, deploying to a local kind/minikube/Docker 
 {
   "name": "staging",
   "defaults": {
-    "runtime": "azure-container-apps",
     "region": "westeurope",
     "replicas": 2,
     "cpu": "500m",
     "memory": "1Gi",
     "ha": false
+  },
+  "runtime": {
+    "name": "azure-container-apps",
+    "config": {}
   }
 }
 ```
@@ -1684,12 +1695,15 @@ Uses the `azure-container-apps` runtime plugin. Provisioners provision Azure Dat
 {
   "name": "prod",
   "defaults": {
-    "runtime": "aws-ecs",
     "region": "us-east-1",
     "replicas": 3,
     "cpu": "500m",
     "memory": "1Gi",
     "ha": true
+  },
+  "runtime": {
+    "name": "aws-ecs",
+    "config": {}
   },
   "alertRouting": {
     "default": ["slack://#prod-alerts"],

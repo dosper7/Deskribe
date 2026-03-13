@@ -470,7 +470,7 @@ correct provisioner.
 Runtime plugins deploy workloads to a compute platform. The built-in plugin
 targets Kubernetes. Here is an **Azure Container Apps** runtime plugin.
 
-### 4.1 The Adapter
+### 4.1 The Runtime Plugin
 
 ```csharp
 // AcaRuntimePlugin.cs
@@ -935,13 +935,21 @@ Below is a complete test class for the MongoDB resource provider.
 using Deskribe.Plugins.Resources.MongoDB;
 using Deskribe.Sdk;
 using Deskribe.Sdk.Models;
-using Deskribe.Sdk.Resources;
 
 namespace Deskribe.Plugins.Tests;
 
 public class MongoDbProviderTests
 {
     private readonly MongoDbResourceProvider _provider = new();
+
+    private static ResourceDescriptor CreateResource(
+        string? size = null,
+        Dictionary<string, object>? properties = null) => new()
+    {
+        Type = "mongodb",
+        Size = size,
+        Properties = properties ?? new Dictionary<string, object>()
+    };
 
     private static ValidationContext CreateValidationContext() => new()
     {
@@ -970,13 +978,11 @@ public class MongoDbProviderTests
     [Fact]
     public async Task Validate_PassesForValidResource()
     {
-        var resource = new MongoDbResource
+        var resource = CreateResource(size: "m", properties: new()
         {
-            Type = "mongodb",
-            Size = "m",
-            Version = "7.0",
-            ReplicaSet = true
-        };
+            ["version"] = "7.0",
+            ["replicaSet"] = true
+        });
 
         var result = await _provider.ValidateAsync(resource, CreateValidationContext(), CancellationToken.None);
 
@@ -987,7 +993,7 @@ public class MongoDbProviderTests
     [Fact]
     public async Task Validate_PassesWithDefaultsOnly()
     {
-        var resource = new MongoDbResource { Type = "mongodb" };
+        var resource = CreateResource();
 
         var result = await _provider.ValidateAsync(resource, CreateValidationContext(), CancellationToken.None);
 
@@ -997,7 +1003,7 @@ public class MongoDbProviderTests
     [Fact]
     public async Task Validate_FailsForInvalidSize()
     {
-        var resource = new MongoDbResource { Type = "mongodb", Size = "mega" };
+        var resource = CreateResource(size: "mega");
 
         var result = await _provider.ValidateAsync(resource, CreateValidationContext(), CancellationToken.None);
 
@@ -1009,7 +1015,7 @@ public class MongoDbProviderTests
     [Fact]
     public async Task Validate_FailsForInvalidVersion()
     {
-        var resource = new MongoDbResource { Type = "mongodb", Version = "4.4" };
+        var resource = CreateResource(properties: new() { ["version"] = "4.4" });
 
         var result = await _provider.ValidateAsync(resource, CreateValidationContext(), CancellationToken.None);
 
@@ -1023,7 +1029,7 @@ public class MongoDbProviderTests
     [InlineData(20000)]
     public async Task Validate_FailsForInvalidStorageGb(int storageGb)
     {
-        var resource = new MongoDbResource { Type = "mongodb", StorageGb = storageGb };
+        var resource = CreateResource(properties: new() { ["storageGb"] = storageGb });
 
         var result = await _provider.ValidateAsync(resource, CreateValidationContext(), CancellationToken.None);
 
@@ -1031,12 +1037,24 @@ public class MongoDbProviderTests
         Assert.Contains("storageGb", result.Errors[0]);
     }
 
+    // --- Schema Tests ---
+
+    [Fact]
+    public void GetSchema_ReturnsExpectedProperties()
+    {
+        var schema = _provider.GetSchema();
+
+        Assert.Contains("version", schema.Properties.Keys);
+        Assert.Contains("replicaSet", schema.Properties.Keys);
+        Assert.Contains("storageGb", schema.Properties.Keys);
+    }
+
     // --- Planning Tests ---
 
     [Fact]
     public async Task Plan_ReturnsCorrectResourceType()
     {
-        var resource = new MongoDbResource { Type = "mongodb", Size = "m" };
+        var resource = CreateResource(size: "m");
 
         var result = await _provider.PlanAsync(resource, CreatePlanContext(), CancellationToken.None);
 
@@ -1047,7 +1065,7 @@ public class MongoDbProviderTests
     [Fact]
     public async Task Plan_OutputsContainConnectionString()
     {
-        var resource = new MongoDbResource { Type = "mongodb" };
+        var resource = CreateResource();
 
         var result = await _provider.PlanAsync(resource, CreatePlanContext("orders"), CancellationToken.None);
 
@@ -1059,7 +1077,11 @@ public class MongoDbProviderTests
     [Fact]
     public async Task Plan_ConfigurationContainsHelmDetails()
     {
-        var resource = new MongoDbResource { Type = "mongodb", Version = "8.0", ReplicaSet = true };
+        var resource = CreateResource(properties: new()
+        {
+            ["version"] = "8.0",
+            ["replicaSet"] = true
+        });
 
         var result = await _provider.PlanAsync(resource, CreatePlanContext(), CancellationToken.None);
 
@@ -1073,7 +1095,7 @@ public class MongoDbProviderTests
     {
         var ctx = CreatePlanContext("payments");
 
-        var resource = new MongoDbResource { Type = "mongodb" };
+        var resource = CreateResource();
         var result = await _provider.PlanAsync(resource, ctx, CancellationToken.None);
 
         Assert.Equal("payments-dev", result.Configuration["namespace"]);
