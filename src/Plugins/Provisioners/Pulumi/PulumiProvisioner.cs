@@ -10,14 +10,14 @@ public class PulumiProvisioner : IProvisioner
 
     public async Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
     {
-        var pulumiProjectDir = plan.Platform.Defaults.PulumiProjectDir;
+        var pulumiProjectDir = GetProjectDir(plan.Platform);
 
         if (string.IsNullOrEmpty(pulumiProjectDir))
         {
             return new ProvisionResult
             {
                 Success = false,
-                Errors = ["pulumiProjectDir must be configured in platform defaults to use the Pulumi provisioner"]
+                Errors = ["projectDir must be configured in provisionerConfigs.pulumi to use the Pulumi provisioner"]
             };
         }
 
@@ -136,9 +136,9 @@ public class PulumiProvisioner : IProvisioner
 
     public async Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)
     {
-        var projectDir = platform.Defaults.PulumiProjectDir;
+        var projectDir = GetProjectDir(platform);
         if (string.IsNullOrEmpty(projectDir))
-            throw new InvalidOperationException("pulumiProjectDir must be configured in platform defaults to use the Pulumi provisioner");
+            throw new InvalidOperationException("projectDir must be configured in provisionerConfigs.pulumi to use the Pulumi provisioner");
 
         var stackName = $"{appName}-{environment}";
         var workspace = await global::Pulumi.Automation.LocalWorkspace.CreateOrSelectStackAsync(
@@ -146,6 +146,16 @@ public class PulumiProvisioner : IProvisioner
         await workspace.DestroyAsync(
             new global::Pulumi.Automation.DestroyOptions { OnStandardOutput = Console.WriteLine }, ct);
         await workspace.Workspace.RemoveStackAsync(stackName, ct);
+    }
+
+    private static string? GetProjectDir(PlatformConfig platform)
+    {
+        if (platform.ProvisionerConfigs.TryGetValue("pulumi", out var config)
+            && config.TryGetValue("projectDir", out var dir))
+        {
+            return dir.GetString();
+        }
+        return null;
     }
 
     private static string FormatValue(object? value)
