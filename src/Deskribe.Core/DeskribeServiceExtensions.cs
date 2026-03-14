@@ -13,11 +13,23 @@ public static class DeskribeServiceExtensions
 {
     public static IServiceCollection AddDeskribe(this IServiceCollection services, params Assembly[] pluginAssemblies)
     {
+        return AddDeskribeCore(services, pluginAssemblies);
+    }
+
+    public static IServiceCollection AddDeskribe(this IServiceCollection services, Assembly[] builtIn, params string[] pluginDirs)
+    {
+        var externalAssemblies = PluginLoader.LoadFromDirectories(pluginDirs);
+        var allAssemblies = builtIn.Concat(externalAssemblies).ToArray();
+        return AddDeskribeCore(services, allAssemblies);
+    }
+
+    private static IServiceCollection AddDeskribeCore(IServiceCollection services, Assembly[] pluginAssemblies)
+    {
         services.AddSingleton<ConfigLoader>();
         services.AddSingleton<MergeEngine>();
         services.AddSingleton<ResourceReferenceResolver>();
         services.AddSingleton<PolicyValidator>();
-        services.AddSingleton<PluginRegistry>(sp =>
+        services.AddSingleton(sp =>
         {
             var registry = new PluginRegistry(
                 sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<PluginRegistry>>());

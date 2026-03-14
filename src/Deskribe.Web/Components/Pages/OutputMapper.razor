@@ -1,0 +1,221 @@
+@page "/output-mapper"
+@using Deskribe.Core.Plugins
+@using Deskribe.Sdk.Models
+@using System.Text.Json
+@inject PluginRegistry PluginRegistry
+@rendermode InteractiveServer
+
+<PageTitle>Output Mapper - Deskribe</PageTitle>
+
+<div class="page-header">
+    <h1>Output Mapper</h1>
+    <p style="color: var(--text-muted); margin-top: 4px;">Configure platform-output provisioner mappings for your resource types.</p>
+</div>
+
+<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 24px;">
+    <div>
+        <div class="card" style="margin-bottom: 16px;">
+            <div class="card-header">
+                <h3>Base Path</h3>
+            </div>
+            <div class="card-body">
+                <input type="text" @bind="basePath" @bind:event="oninput"
+                       class="form-input" placeholder="{team}/{app}/{env}"
+                       style="width: 100%;" />
+                <div style="margin-top: 8px; font-size: 12px; color: var(--text-muted);">
+                    Tokens: <code>{app}</code> <code>{env}</code> <code>{team}</code> <code>{org}</code>
+                </div>
+            </div>
+        </div>
+
+        @foreach (var resourceType in resourceTypes)
+        {
+            var module = GetOrCreateModule(resourceType);
+            <div class="card" style="margin-bottom: 16px;">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                    <h3>
+                        <span class="badge badge-resource">@resourceType</span>
+                    </h3>
+                    <label style="font-size: 13px; display: flex; align-items: center; gap: 6px;">
+                        <input type="checkbox" checked="@module.Enabled"
+                               @onchange="e => ToggleModule(resourceType, (bool)(e.Value ?? false))" />
+                        Enabled
+                    </label>
+                </div>
+                @if (module.Enabled)
+                {
+                    <div class="card-body">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px;">
+                            <div>
+                                <label class="form-label">Module Name</label>
+                                <input type="text" @bind="module.ModuleName" @bind:event="oninput"
+                                       class="form-input" style="width: 100%;" />
+                            </div>
+                            <div>
+                                <label class="form-label">File Name</label>
+                                <input type="text" @bind="module.FileName" @bind:event="oninput"
+                                       class="form-input" style="width: 100%;" />
+                            </div>
+                        </div>
+
+                        <div style="margin-bottom: 8px; font-size: 12px; color: var(--text-muted);">
+                            Available tokens: <code>{app}</code> <code>{env}</code> <code>{team}</code> <code>{org}</code>
+                            @{ var schema = GetSchema(resourceType); }
+                            @if (schema != null)
+                            {
+                                @foreach (var prop in schema.Properties)
+                                {
+                                    <text> </text><code>{@prop.Name}</code>
+                                }
+                            }
+                        </div>
+
+                        <table class="resource-table" style="margin-bottom: 12px;">
+                            <thead>
+                                <tr>
+                                    <th>Target Field</th>
+                                    <th>Template Value</th>
+                                    <th style="width: 40px;"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @for (var i = 0; i < module.Mappings.Count; i++)
+                                {
+                                    var idx = i;
+                                    <tr>
+                                        <td>
+                                            <input type="text" @bind="module.Mappings[idx].Key" @bind:event="oninput"
+                                                   class="form-input" style="width: 100%;" />
+                                        </td>
+                                        <td>
+                                            <input type="text" @bind="module.Mappings[idx].Value" @bind:event="oninput"
+                                                   class="form-input" style="width: 100%;" />
+                                        </td>
+                                        <td>
+                                            <button class="btn btn-sm" style="color: var(--text-muted);"
+                                                    @onclick="() => module.Mappings.RemoveAt(idx)">x</button>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                        <button class="btn btn-secondary btn-sm" @onclick="() => module.Mappings.Add(new MappingEntry())">
+                            + Add Mapping
+                        </button>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    <div>
+        <div class="card" style="position: sticky; top: 16px;">
+            <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <h3>JSON Preview</h3>
+                <button class="btn btn-primary btn-sm" @onclick="CopyToClipboard">
+                    @(copied ? "Copied!" : "Copy JSON")
+                </button>
+            </div>
+            <div class="card-body">
+                <pre style="background: var(--bg-darker, #1a1a2e); color: var(--text-primary); padding: 16px; border-radius: 8px; overflow: auto; max-height: 70vh; font-size: 13px; line-height: 1.5; margin: 0;">@GenerateJson()</pre>
+            </div>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Inject] private IJSRuntime JS { get; set; } = default!;
+
+    private string basePath = "{team}/{app}/{env}";
+    private List<string> resourceTypes = new();
+    private Dictionary<string, ModuleState> modules = new();
+    private bool copied;
+
+    protected override void OnInitialized()
+    {
+        resourceTypes = PluginRegistry.GetAllResourceProviders().Keys.OrderBy(k => k).ToList();
+    }
+
+    private ModuleState GetOrCreateModule(string resourceType)
+    {
+        if (!modules.TryGetValue(resourceType, out var module))
+        {
+            module = new ModuleState
+            {
+                ModuleName = resourceType.Replace(".", "-"),
+                FileName = "terraform.tfvars.json",
+                Enabled = false,
+                Mappings = new List<MappingEntry>
+                {
+                    new() { Key = "name", Value = "{app}-" + resourceType.Replace(".", "-") },
+                    new() { Key = "environment", Value = "{env}" },
+                    new() { Key = "team", Value = "{team}" }
+                }
+            };
+            modules[resourceType] = module;
+        }
+        return module;
+    }
+
+    private ResourceSchema? GetSchema(string resourceType)
+    {
+        return PluginRegistry.GetResourceProvider(resourceType)?.GetSchema();
+    }
+
+    private void ToggleModule(string resourceType, bool enabled)
+    {
+        GetOrCreateModule(resourceType).Enabled = enabled;
+    }
+
+    private string GenerateJson()
+    {
+        var config = new Dictionary<string, object>
+        {
+            ["basePath"] = basePath,
+            ["modules"] = modules
+                .Where(m => m.Value.Enabled)
+                .ToDictionary(
+                    m => m.Key,
+                    m => new Dictionary<string, object>
+                    {
+                        ["moduleName"] = m.Value.ModuleName,
+                        ["fileName"] = m.Value.FileName,
+                        ["mappings"] = m.Value.Mappings.ToDictionary(e => e.Key, e => e.Value)
+                    })
+        };
+
+        var wrapper = new Dictionary<string, object>
+        {
+            ["provisionerConfigs"] = new Dictionary<string, object>
+            {
+                ["platform-output"] = config
+            }
+        };
+
+        return JsonSerializer.Serialize(wrapper, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    private async Task CopyToClipboard()
+    {
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", GenerateJson());
+        copied = true;
+        StateHasChanged();
+        await Task.Delay(2000);
+        copied = false;
+        StateHasChanged();
+    }
+
+    private class ModuleState
+    {
+        public string ModuleName { get; set; } = "";
+        public string FileName { get; set; } = "terraform.tfvars.json";
+        public bool Enabled { get; set; }
+        public List<MappingEntry> Mappings { get; set; } = new();
+    }
+
+    private class MappingEntry
+    {
+        public string Key { get; set; } = "";
+        public string Value { get; set; } = "";
+    }
+}

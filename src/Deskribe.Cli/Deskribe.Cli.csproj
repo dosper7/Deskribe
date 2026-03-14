@@ -9,6 +9,7 @@
     <ProjectReference Include="..\Plugins\Provisioners\Pulumi\Deskribe.Plugins.Provisioner.Pulumi.csproj" />
     <ProjectReference Include="..\Plugins\Provisioners\Terraform\Deskribe.Plugins.Provisioner.Terraform.csproj" />
     <ProjectReference Include="..\Plugins\Runtimes\Kubernetes\Deskribe.Plugins.Runtime.Kubernetes.csproj" />
+    <ProjectReference Include="..\Plugins\Provisioners\PlatformOutput\Deskribe.Plugins.Provisioner.PlatformOutput.csproj" />
   </ItemGroup>
 
   <ItemGroup>

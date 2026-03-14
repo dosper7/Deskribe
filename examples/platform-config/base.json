@@ -16,6 +16,32 @@
   "provisionerConfigs": {
     "pulumi": {
       "projectDir": "./infra"
+    },
+    "platform-output": {
+      "basePath": "{team}/{app}/{env}",
+      "modules": {
+        "postgres": {
+          "moduleName": "postgresql-flexible-server",
+          "fileName": "terraform.tfvars.json",
+          "mappings": {
+            "db_name": "{app}-db",
+            "sku_name": "{size:map(s=B_Standard_B1ms,m=GP_Standard_D2s_v3,l=GP_Standard_D4s_v3)}",
+            "pg_version": "{version}",
+            "environment": "{env}",
+            "team": "{team}",
+            "ha_enabled": "{ha}"
+          }
+        },
+        "redis": {
+          "moduleName": "redis-cache",
+          "fileName": "terraform.tfvars.json",
+          "mappings": {
+            "name": "{app}-redis",
+            "sku_name": "Standard",
+            "environment": "{env}"
+          }
+        }
+      }
     }
   },
   "provisioners": {

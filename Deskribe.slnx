@@ -12,6 +12,7 @@
   <Folder Name="/src/Plugins/Provisioners/">
     <Project Path="src/Plugins/Provisioners/Pulumi/Deskribe.Plugins.Provisioner.Pulumi.csproj" />
     <Project Path="src/Plugins/Provisioners/Terraform/Deskribe.Plugins.Provisioner.Terraform.csproj" />
+    <Project Path="src/Plugins/Provisioners/PlatformOutput/Deskribe.Plugins.Provisioner.PlatformOutput.csproj" />
   </Folder>
   <Folder Name="/src/Plugins/Resources/">
     <Project Path="src/Plugins/Resources/Kafka/Deskribe.Plugins.Resources.Kafka.csproj" />

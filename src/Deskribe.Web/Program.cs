@@ -1,7 +1,10 @@
+using System.Reflection;
 using Deskribe.Web.Api;
 using Deskribe.Web.Components;
 using Deskribe.Web.Services;
 using Deskribe.Core;
+using Deskribe.Core.Plugins;
+using Deskribe.Plugins.Provisioner.PlatformOutput;
 using Deskribe.Plugins.Provisioner.Pulumi;
 using Deskribe.Plugins.Provisioner.Terraform;
 using Deskribe.Plugins.Resources.Kafka;
@@ -16,13 +19,21 @@ builder.AddServiceDefaults();
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
 
-builder.Services.AddDeskribe(
+var builtInAssemblies = new Assembly[]
+{
     typeof(PostgresPlugin).Assembly,
     typeof(RedisPlugin).Assembly,
     typeof(KafkaPlugin).Assembly,
     typeof(PulumiPlugin).Assembly,
     typeof(TerraformPlugin).Assembly,
-    typeof(KubernetesPlugin).Assembly);
+    typeof(KubernetesPlugin).Assembly,
+    typeof(PlatformOutputPlugin).Assembly,
+};
+
+var pluginsDir = builder.Configuration.GetValue<string>("Deskribe:PluginsDir")
+    ?? PluginLoader.DefaultPluginsDirectory;
+
+builder.Services.AddDeskribe(builtInAssemblies, pluginsDir);
 
 builder.Services.AddSingleton<AppStateStore>();
 builder.Services.AddSingleton<DeskribeUiService>();

@@ -1,35 +1,63 @@
-# Integration Guide: iac-kube-platform (Terraform)
+# Integration Guide: iac-kube-platform (Platform Output Provisioner)
 
-This guide explains how Deskribe integrates with an existing `iac-kube-platform` Terraform repository that manages infrastructure modules (PostgreSQL, Redis, Kafka, etc.).
+This guide explains how Deskribe integrates with an existing `iac-kube-platform` Terraform repository using the built-in `platform-output` provisioner. No adapter scripts required.
 
-## Deskribe's Role
+## How It Works
 
-Deskribe **generates intent**, it does not replace your Terraform modules. The flow is:
-
-1. Developer writes `deskribe.json` (what they need)
-2. Deskribe generates `terraform.tfvars.json` (structured config)
-3. An adapter script maps the output to the YAML config format expected by `iac-kube-platform`
+1. Platform team configures output mappings in `platform-config/base.json` (or uses the Web UI Output Mapper)
+2. Developer writes `deskribe.json` (what they need)
+3. `deskribe generate` produces files in the exact folder structure expected by `iac-kube-platform`
 4. Terraform applies the infrastructure using existing modules
 
-## Step 1: Generate Terraform Artifacts
+## Step 1: Configure Platform Output Mappings
 
-```bash
-deskribe generate \
-  -f deskribe.json \
-  --env prod \
-  --platform ./platform-config \
-  -o ./output \
-  --output-format terraform-only
+In your platform config (`base.json`), add a `platform-output` provisioner config and assign it to resource types:
+
+```json
+{
+  "organization": "acme",
+  "provisionerConfigs": {
+    "platform-output": {
+      "basePath": "{team}/{app}/{env}",
+      "modules": {
+        "postgres": {
+          "moduleName": "postgresql-flexible-server",
+          "fileName": "terraform.tfvars.json",
+          "mappings": {
+            "db_name": "{app}-db",
+            "sku_name": "{size:map(s=B_Standard_B1ms,m=GP_Standard_D2s_v3,l=GP_Standard_D4s_v3)}",
+            "pg_version": "{version}",
+            "environment": "{env}",
+            "team": "{team}",
+            "ha_enabled": "{ha}"
+          }
+        },
+        "redis": {
+          "moduleName": "redis-cache",
+          "fileName": "terraform.tfvars.json",
+          "mappings": {
+            "name": "{app}-redis",
+            "sku_name": "Standard",
+            "environment": "{env}"
+          }
+        }
+      }
+    }
+  },
+  "provisioners": {
+    "postgres": "platform-output",
+    "redis": "platform-output"
+  }
+}
 ```
 
-This produces:
-- `terraform.tfvars.json` — resource configuration
-- `helm-values.yaml` — workload Helm values
-- `bindings.json` — resource output bindings
+### Template Tokens
 
-## Step 2: Terraform tfvars Output
+- `{app}`, `{env}`, `{team}`, `{org}` — from the manifest and platform context
+- `{fieldName}` — from the resource configuration (size, version, ha, etc.)
+- `{field:map(a=x,b=y)}` — value mapping (e.g., map size `s`/`m`/`l` to Azure SKU names)
 
-For a manifest like:
+## Step 2: Write Your Manifest
 
 ```json
 {
@@ -42,79 +70,60 @@ For a manifest like:
 }
 ```
 
-Deskribe generates `terraform.tfvars.json`:
+## Step 3: Generate Output
+
+```bash
+deskribe generate \
+  -f deskribe.json \
+  --env prod \
+  --platform ./platform-config \
+  -o ./output
+```
+
+This produces:
+
+```
+output/
+  mobile-replenishment/payments-api/prod/
+    postgresql-flexible-server/
+      terraform.tfvars.json
+    redis-cache/
+      terraform.tfvars.json
+```
+
+The `postgresql-flexible-server/terraform.tfvars.json` contains:
 
 ```json
 {
-  "app_name": "payments-api",
+  "db_name": "payments-api-db",
+  "sku_name": "GP_Standard_D2s_v3",
+  "pg_version": "16",
   "environment": "prod",
-  "region": "westeurope",
-  "postgres_config": {
-    "sku": "GP_Gen5_2",
-    "storageMb": 65536,
-    "version": "16",
-    "ha": true,
-    "namespace": "payments-api-prod",
-    "helmChart": "oci://registry-1.docker.io/bitnamicharts/postgresql"
-  },
-  "redis_config": {
-    "sku": "Standard",
-    "capacity": 1,
-    "namespace": "payments-api-prod",
-    "helmChart": "oci://registry-1.docker.io/bitnamicharts/redis"
-  }
+  "team": "mobile-replenishment",
+  "ha_enabled": ""
 }
 ```
 
-## Step 3: Map to iac-kube-platform Config
+## Step 4: Team Grouping → Folder Structure
 
-The `iac-kube-platform` repo uses YAML config files like `optional-modules-config.yaml`. A thin adapter script converts the Deskribe output:
-
-```bash
-#!/bin/bash
-# adapt-deskribe-to-iac.sh
-# Converts Deskribe terraform.tfvars.json to iac-kube-platform YAML format
-
-TFVARS="output/terraform.tfvars.json"
-APP_NAME=$(jq -r '.app_name' "$TFVARS")
-ENV=$(jq -r '.environment' "$TFVARS")
-REGION=$(jq -r '.region' "$TFVARS")
-
-# Example: Generate postgresql-flexible-server module config
-if jq -e '.postgres_config' "$TFVARS" > /dev/null 2>&1; then
-  cat <<EOF > "environments/${TEAM:-default}/${APP_NAME}-postgres.yaml"
-module: postgresql-flexible-server
-name: ${APP_NAME}-db
-environment: ${ENV}
-region: ${REGION}
-sku: $(jq -r '.postgres_config.sku' "$TFVARS")
-storage_mb: $(jq -r '.postgres_config.storageMb' "$TFVARS")
-version: $(jq -r '.postgres_config.version' "$TFVARS")
-ha_enabled: $(jq -r '.postgres_config.ha // false' "$TFVARS")
-EOF
-fi
-```
-
-## Step 4: Team Grouping
-
-The `"team"` field in the manifest maps directly to the folder structure in `iac-kube-platform`:
+The `"team"` field in the manifest maps directly to the folder structure expected by `iac-kube-platform`:
 
 ```
 deskribe.json: "team": "mobile-replenishment"
     ↓
-iac-kube-platform/environments/mobile-replenishment/payments-api-postgres.yaml
-iac-kube-platform/environments/mobile-replenishment/payments-api-redis.yaml
+output/mobile-replenishment/payments-api/prod/postgresql-flexible-server/terraform.tfvars.json
+output/mobile-replenishment/payments-api/prod/redis-cache/terraform.tfvars.json
 ```
 
-## Step 5: Unconfigured Resources
+## Step 5: Use the Web UI Output Mapper
 
-When a resource type has no provisioner configured in the platform config, Deskribe emits a warning instead of failing:
+Instead of writing JSON by hand, use the Output Mapper page in the Deskribe Web UI:
 
-```
-⚠ No provisioner configured for 'kafka.messaging'. This resource must be provisioned manually.
-```
-
-The developer must handle these resources through existing manual processes or by adding provisioner mappings to the platform config.
+1. Open the Web UI → **Output Mapper** in the sidebar
+2. Set the base path template (e.g., `{team}/{app}/{env}`)
+3. Enable resource types and configure module name, file name, and field mappings
+4. Use the live JSON preview on the right to verify the config
+5. Click **Copy JSON** and paste into your `base.json`
 
 ## Step 6: CI/CD Integration
 
@@ -134,39 +143,21 @@ jobs:
         with:
           dotnet-version: '10.0.x'
 
-      - name: Generate Terraform artifacts
+      - name: Install Deskribe CLI
+        run: dotnet tool install --global deskribe-cli || true
+
+      - name: Generate platform output
         run: |
           deskribe generate \
             -f deskribe.json \
             --env prod \
             -p platform-config \
-            -o ./output \
-            --output-format terraform-only
-
-      - name: Convert to iac-kube-platform format
-        run: ./scripts/adapt-deskribe-to-iac.sh
+            -o ./output
 
       - name: Create PR in iac-kube-platform
         run: |
           # Push generated config to iac-kube-platform via PR
           gh pr create --repo org/iac-kube-platform \
             --title "Update $APP_NAME infra config" \
-            --body "Auto-generated from deskribe.json"
+            --body "Auto-generated from deskribe.json by platform-output provisioner"
 ```
-
-## Future: Custom Provisioner Plugin
-
-A custom provisioner plugin can directly generate `iac-kube-platform` YAML format, eliminating the adapter script:
-
-```csharp
-[DeskribePlugin("iac-kube-platform")]
-public class IacKubePlatformPlugin : IPlugin
-{
-    public void Register(IPluginRegistrar registrar)
-    {
-        registrar.RegisterProvisioner(new IacKubePlatformProvisioner());
-    }
-}
-```
-
-This plugin would implement `IProvisioner.GenerateArtifactsAsync()` to produce the YAML configs directly in the format expected by your Terraform modules.
