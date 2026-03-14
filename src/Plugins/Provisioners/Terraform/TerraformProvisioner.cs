@@ -2,7 +2,7 @@ using System.Text.Json;
 using Deskribe.Sdk;
 using Deskribe.Sdk.Models;
 
-namespace Deskribe.Plugins.Backend.Terraform;
+namespace Deskribe.Plugins.Provisioner.Terraform;
 
 public class TerraformProvisioner : IProvisioner
 {

@@ -9,9 +9,9 @@
     <Project Path="src/Deskribe.Web/Deskribe.Web.csproj" />
     <Project Path="src/Deskribe.Web.Client/Deskribe.Web.Client.csproj" />
   </Folder>
-  <Folder Name="/src/Plugins/Backends/">
-    <Project Path="src/Plugins/Backends/Pulumi/Deskribe.Plugins.Backend.Pulumi.csproj" />
-    <Project Path="src/Plugins/Backends/Terraform/Deskribe.Plugins.Backend.Terraform.csproj" />
+  <Folder Name="/src/Plugins/Provisioners/">
+    <Project Path="src/Plugins/Provisioners/Pulumi/Deskribe.Plugins.Provisioner.Pulumi.csproj" />
+    <Project Path="src/Plugins/Provisioners/Terraform/Deskribe.Plugins.Provisioner.Terraform.csproj" />
   </Folder>
   <Folder Name="/src/Plugins/Resources/">
     <Project Path="src/Plugins/Resources/Kafka/Deskribe.Plugins.Resources.Kafka.csproj" />

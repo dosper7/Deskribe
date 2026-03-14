@@ -3,6 +3,7 @@ namespace Deskribe.Sdk.Models;
 public sealed record DeskribePlan
 {
     public required string AppName { get; init; }
+    public string? Team { get; init; }
     public required string Environment { get; init; }
     public required PlatformConfig Platform { get; init; }
     public required EnvironmentConfig EnvironmentConfig { get; init; }

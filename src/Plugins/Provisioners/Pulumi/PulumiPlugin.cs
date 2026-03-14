@@ -1,6 +1,6 @@
 using Deskribe.Sdk;
 
-namespace Deskribe.Plugins.Backend.Pulumi;
+namespace Deskribe.Plugins.Provisioner.Pulumi;
 
 [DeskribePlugin("pulumi")]
 public class PulumiPlugin : IPlugin

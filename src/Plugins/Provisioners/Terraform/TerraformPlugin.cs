@@ -1,6 +1,6 @@
 using Deskribe.Sdk;
 
-namespace Deskribe.Plugins.Backend.Terraform;
+namespace Deskribe.Plugins.Provisioner.Terraform;
 
 [DeskribePlugin("terraform")]
 public class TerraformPlugin : IPlugin

@@ -97,8 +97,7 @@ platform-config/
     "replicas": 2,
     "cpu": "250m",
     "memory": "512Mi",
-    "namespacePattern": "{app}-{env}",
-    "pulumiProjectDir": "infra"
+    "namespacePattern": "{app}-{env}"
   },
   "runtime": { "name": "kubernetes" },
   "provisioners": { "postgres": "pulumi", "redis": "pulumi", "kafka.messaging": "pulumi" },
@@ -415,7 +414,7 @@ Deskribe/
     Deskribe.AppHost/          Aspire orchestrator
     Deskribe.ServiceDefaults/  OpenTelemetry, health checks
     Plugins/
-      Backends/
+      Provisioners/
         Pulumi/                Pulumi Automation API provisioner
         Terraform/             Terraform artifact generator provisioner
       Resources/

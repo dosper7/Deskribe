@@ -13,6 +13,7 @@ public record WorkloadPlan
     public required string AppName { get; init; }
     public required string Environment { get; init; }
     public required string Namespace { get; init; }
+    public string? Team { get; init; }
     public string? Image { get; init; }
     public int Replicas { get; init; } = 2;
     public string Cpu { get; init; } = "250m";

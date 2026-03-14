@@ -1,5 +1,6 @@
 {
   "name": "payments-api",
+  "team": "mobile-replenishment",
   "resources": [
     { "type": "postgres", "size": "m", "version": "16" },
     { "type": "redis" },

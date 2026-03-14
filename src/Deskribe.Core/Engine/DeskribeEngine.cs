@@ -148,6 +148,7 @@ public class DeskribeEngine
         return new DeskribePlan
         {
             AppName = manifest.Name,
+            Team = manifest.Team,
             Environment = environment,
             Platform = platform,
             EnvironmentConfig = envConfig,
@@ -166,15 +167,25 @@ public class DeskribeEngine
         // 1. Apply infra via provisioners
         var resourceOutputs = new Dictionary<string, Dictionary<string, string>>();
 
+        var applyWarnings = new List<string>();
+
         foreach (var resourcePlan in plan.ResourcePlans)
         {
-            var provisionerName = plan.Platform.Provisioners.GetValueOrDefault(resourcePlan.ResourceType, "pulumi");
+            var provisionerName = plan.Platform.Provisioners.GetValueOrDefault(resourcePlan.ResourceType);
+            if (provisionerName is null)
+            {
+                _logger.LogWarning("No provisioner configured for resource type '{Type}'. Skipping — handle manually.", resourcePlan.ResourceType);
+                applyWarnings.Add($"No provisioner configured for '{resourcePlan.ResourceType}'. This resource must be provisioned manually.");
+                continue;
+            }
+
             var provisioner = _pluginRegistry.GetProvisioner(provisionerName);
 
             if (provisioner is null)
             {
                 _logger.LogWarning("No provisioner '{Provisioner}' for resource '{Type}', skipping apply",
                     provisionerName, resourcePlan.ResourceType);
+                applyWarnings.Add($"Provisioner '{provisionerName}' not found for '{resourcePlan.ResourceType}'. This resource must be provisioned manually.");
                 continue;
             }
 
@@ -234,7 +245,15 @@ public class DeskribeEngine
         if (format is "all" or "terraform-only")
         {
             var provisionerGroups = plan.ResourcePlans
-                .GroupBy(rp => plan.Platform.Provisioners.GetValueOrDefault(rp.ResourceType, "pulumi"));
+                .Where(rp => plan.Platform.Provisioners.ContainsKey(rp.ResourceType))
+                .GroupBy(rp => plan.Platform.Provisioners[rp.ResourceType]);
+
+            // Warn about resources with no provisioner configured
+            foreach (var rp in plan.ResourcePlans.Where(rp => !plan.Platform.Provisioners.ContainsKey(rp.ResourceType)))
+            {
+                _logger.LogWarning("No provisioner configured for resource type '{Type}'. Skipping artifact generation — handle manually.", rp.ResourceType);
+                plan.Warnings.Add($"No provisioner configured for '{rp.ResourceType}'. This resource must be provisioned manually.");
+            }
 
             foreach (var group in provisionerGroups)
             {
@@ -295,7 +314,9 @@ public class DeskribeEngine
     private static List<GeneratedFile> GenerateKustomizeStructure(DeskribePlan plan, RuntimeArtifact artifact, string outputDir)
     {
         var files = new List<GeneratedFile>();
-        var appDir = Path.Combine(outputDir, plan.AppName);
+        var appDir = plan.Team is not null
+            ? Path.Combine(outputDir, plan.Team, plan.AppName)
+            : Path.Combine(outputDir, plan.AppName);
         var baseDir = Path.Combine(appDir, "base");
         var overlayDir = Path.Combine(appDir, "overlays", plan.Environment);
 

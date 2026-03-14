@@ -63,6 +63,9 @@
         <button class="btn btn-success" @onclick="() => showApplyConfirm = true" disabled="@(plan == null || isApplying)">
             @if (isApplying) { <span class="spinner"></span> } Apply
         </button>
+        <button class="btn btn-primary" @onclick="GenerateArtifacts" disabled="@(plan == null || isGenerating)" style="background: #6366f1; border-color: #6366f1;">
+            @if (isGenerating) { <span class="spinner"></span> } Generate
+        </button>
         <button class="btn btn-danger" @onclick="() => showDestroyConfirm = true" disabled="@isDestroying">
             @if (isDestroying) { <span class="spinner"></span> } Destroy
         </button>
@@ -76,6 +79,18 @@
 @if (successMessage != null)
 {
     <div class="toast success" style="margin-bottom: 16px;">@successMessage</div>
+}
+@if (plan?.Warnings.Count > 0)
+{
+    <div style="background: #fef3c7; border: 1px solid #f59e0b; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; color: #92400e;">
+        <strong style="display: block; margin-bottom: 4px;">Warnings</strong>
+        <ul style="margin: 0; padding-left: 20px;">
+            @foreach (var warning in plan.Warnings)
+            {
+                <li>@warning</li>
+            }
+        </ul>
+    </div>
 }
 
 <div class="tab-nav">
@@ -234,6 +249,7 @@ else if (plan != null)
     private bool isLoading;
     private bool isApplying;
     private bool isDestroying;
+    private bool isGenerating;
     private string activeTab = "plan";
     private string containerImage = "nginx:latest";
     private bool showApplyConfirm;
@@ -271,6 +287,28 @@ else if (plan != null)
         finally
         {
             isLoading = false;
+        }
+    }
+
+    private async Task GenerateArtifacts()
+    {
+        if (plan == null) return;
+        isGenerating = true;
+        errorMessage = null;
+
+        try
+        {
+            var outputDir = Path.Combine(Path.GetTempPath(), "deskribe-output", AppName, Environment);
+            var files = await UiService.GenerateAsync(AppName, Environment, outputDir, containerImage, "k8s-only");
+            successMessage = $"Generated {files.Count} artifact(s) to {outputDir}";
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isGenerating = false;
         }
     }
 

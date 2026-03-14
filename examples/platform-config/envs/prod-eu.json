@@ -1,0 +1,8 @@
+{
+  "name": "prod-eu",
+  "defaults": {
+    "region": "westeurope",
+    "replicas": 3,
+    "ha": true
+  }
+}

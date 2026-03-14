@@ -50,6 +50,7 @@ public class MergeEngine
 
         var nsPattern = platform.Defaults.NamespacePattern ?? DefaultNamespacePattern;
         var ns = nsPattern
+            .Replace("{team}", manifest.Team ?? "default")
             .Replace("{app}", manifest.Name)
             .Replace("{env}", environment);
 
@@ -57,6 +58,7 @@ public class MergeEngine
         {
             AppName = manifest.Name,
             Environment = environment,
+            Team = manifest.Team,
             Namespace = ns,
             Image = image,
             Replicas = replicas,

@@ -5,8 +5,7 @@
     "replicas": 2,
     "cpu": "250m",
     "memory": "512Mi",
-    "namespacePattern": "{app}-{env}",
-    "pulumiProjectDir": "examples/weather-api/infra"
+    "namespacePattern": "{app}-{env}"
   },
   "runtime": {
     "name": "kubernetes",
@@ -16,7 +15,7 @@
   },
   "provisionerConfigs": {
     "pulumi": {
-      "projectDir": "examples/weather-api/infra"
+      "projectDir": "./infra"
     }
   },
   "provisioners": {

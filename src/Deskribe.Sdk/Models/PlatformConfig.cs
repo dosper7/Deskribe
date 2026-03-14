@@ -65,8 +65,6 @@ public sealed record PlatformDefaults
     [JsonPropertyName("externalSecretsStore")]
     public string? ExternalSecretsStore { get; init; }
 
-    [JsonPropertyName("pulumiProjectDir")]
-    public string? PulumiProjectDir { get; init; }
 }
 
 public sealed record PlatformPolicies

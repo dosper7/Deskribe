@@ -2,7 +2,7 @@ using System.Text.Json;
 using Deskribe.Sdk;
 using Deskribe.Sdk.Models;
 
-namespace Deskribe.Plugins.Backend.Pulumi;
+namespace Deskribe.Plugins.Provisioner.Pulumi;
 
 public class PulumiProvisioner : IProvisioner
 {

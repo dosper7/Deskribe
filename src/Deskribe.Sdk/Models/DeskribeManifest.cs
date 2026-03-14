@@ -7,6 +7,9 @@ public sealed record DeskribeManifest
     [JsonPropertyName("name")]
     public required string Name { get; init; }
 
+    [JsonPropertyName("team")]
+    public string? Team { get; init; }
+
     [JsonPropertyName("resources")]
     public List<ResourceDescriptor> Resources { get; init; } = [];
 

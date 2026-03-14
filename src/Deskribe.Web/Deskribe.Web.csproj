@@ -6,8 +6,8 @@
     <ProjectReference Include="..\Plugins\Resources\Postgres\Deskribe.Plugins.Resources.Postgres.csproj" />
     <ProjectReference Include="..\Plugins\Resources\Redis\Deskribe.Plugins.Resources.Redis.csproj" />
     <ProjectReference Include="..\Plugins\Resources\Kafka\Deskribe.Plugins.Resources.Kafka.csproj" />
-    <ProjectReference Include="..\Plugins\Backends\Pulumi\Deskribe.Plugins.Backend.Pulumi.csproj" />
-    <ProjectReference Include="..\Plugins\Backends\Terraform\Deskribe.Plugins.Backend.Terraform.csproj" />
+    <ProjectReference Include="..\Plugins\Provisioners\Pulumi\Deskribe.Plugins.Provisioner.Pulumi.csproj" />
+    <ProjectReference Include="..\Plugins\Provisioners\Terraform\Deskribe.Plugins.Provisioner.Terraform.csproj" />
     <ProjectReference Include="..\Plugins\Runtimes\Kubernetes\Deskribe.Plugins.Runtime.Kubernetes.csproj" />
     <ProjectReference Include="..\Deskribe.ServiceDefaults\Deskribe.ServiceDefaults.csproj" />
   </ItemGroup>

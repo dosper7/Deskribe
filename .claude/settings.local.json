@@ -3,7 +3,9 @@
     "allow": [
       "Bash(ls:*)",
       "Bash(dotnet build:*)",
-      "Bash(dotnet test:*)"
+      "Bash(dotnet test:*)",
+      "Bash(mv:*)",
+      "Bash(rm:*)"
     ]
   }
 }
