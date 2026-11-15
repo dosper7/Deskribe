@@ -21,9 +21,15 @@ public static class ApplyCommand
 
         command.SetHandler(async (file, env, platform, images) =>
         {
+            if (!CommandHelpers.ValidateInputs(file, platform))
+            {
+                Environment.ExitCode = 1;
+                return;
+            }
+
             try
             {
-                var imageMap = PlanCommand.ParseImages(images);
+                var imageMap = CommandHelpers.ParseImages(images);
 
                 Console.WriteLine($"Planning...");
                 var plan = await engine.PlanAsync(file, platform, env, imageMap);

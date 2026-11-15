@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Deskribe.Sdk;
+using Deskribe.Sdk.Models;
 using k8s;
 using k8s.Models;
 
@@ -7,13 +9,79 @@ namespace Deskribe.Plugins.Runtime.Kubernetes;
 public class KubernetesRuntimePlugin : IRuntimePlugin
 {
     private readonly KubernetesClientConfiguration? _config;
+    private readonly RuntimeSettings _settings;
 
     public KubernetesRuntimePlugin(KubernetesClientConfiguration? config = null)
+        : this(config, null)
+    {
+    }
+
+    public KubernetesRuntimePlugin(PlatformConfig? platform)
+        : this(null, platform)
+    {
+    }
+
+    public KubernetesRuntimePlugin(KubernetesClientConfiguration? config, PlatformConfig? platform)
     {
         _config = config;
+        _settings = RuntimeSettings.From(platform);
     }
 
     public string Name => "kubernetes";
+
+    // Runtime-level settings, overridable via the platform's runtime.config section
+    // (keys: containerPort, servicePort, portName, externalSecretsStore,
+    // externalSecretsRefreshInterval, externalSecretsStoreKind).
+    private sealed record RuntimeSettings(
+        int ContainerPort,
+        int ServicePort,
+        string PortName,
+        string ExternalSecretsStore,
+        string ExternalSecretsRefreshInterval,
+        string ExternalSecretsStoreKind)
+    {
+        public static RuntimeSettings Default => new(
+            ContainerPort: 8080,
+            ServicePort: 80,
+            PortName: "http",
+            ExternalSecretsStore: "default",
+            ExternalSecretsRefreshInterval: "1h",
+            ExternalSecretsStoreKind: "ClusterSecretStore");
+
+        public static RuntimeSettings From(PlatformConfig? platform)
+        {
+            var defaults = Default;
+            if (platform?.Runtime.Config is not { } config)
+                return defaults;
+
+            return defaults with
+            {
+                ContainerPort = ReadInt(config, "containerPort") ?? defaults.ContainerPort,
+                ServicePort = ReadInt(config, "servicePort") ?? defaults.ServicePort,
+                PortName = ReadString(config, "portName") ?? defaults.PortName,
+                ExternalSecretsStore = ReadString(config, "externalSecretsStore") ?? defaults.ExternalSecretsStore,
+                ExternalSecretsRefreshInterval = ReadString(config, "externalSecretsRefreshInterval") ?? defaults.ExternalSecretsRefreshInterval,
+                ExternalSecretsStoreKind = ReadString(config, "externalSecretsStoreKind") ?? defaults.ExternalSecretsStoreKind
+            };
+        }
+
+        private static string? ReadString(Dictionary<string, JsonElement> config, string key) =>
+            config.TryGetValue(key, out var element) && element.ValueKind == JsonValueKind.String
+                ? element.GetString()
+                : null;
+
+        private static int? ReadInt(Dictionary<string, JsonElement> config, string key)
+        {
+            if (!config.TryGetValue(key, out var element))
+                return null;
+            return element.ValueKind switch
+            {
+                JsonValueKind.Number when element.TryGetInt32(out var value) => value,
+                JsonValueKind.String when int.TryParse(element.GetString(), out var value) => value,
+                _ => null
+            };
+        }
+    }
 
     public Task<RuntimeArtifact> RenderAsync(WorkloadPlan workload, CancellationToken ct = default)
     {
@@ -38,6 +106,8 @@ public class KubernetesRuntimePlugin : IRuntimePlugin
         resourceNames.Add($"Namespace/{workload.Namespace}");
 
         // --- Secret / ExternalSecret (if env vars exist) ---
+        // Note: the strategy set (opaque / external-secrets / sealed-secrets) is fixed for
+        // now; it could be made pluggable later.
         if (workload.EnvironmentVariables.Count > 0)
         {
             switch (workload.SecretsStrategy)
@@ -102,8 +172,8 @@ public class KubernetesRuntimePlugin : IRuntimePlugin
             {
                 new()
                 {
-                    ContainerPort = 8080,
-                    Name = "http"
+                    ContainerPort = _settings.ContainerPort,
+                    Name = _settings.PortName
                 }
             },
             Resources = new V1ResourceRequirements
@@ -189,9 +259,9 @@ public class KubernetesRuntimePlugin : IRuntimePlugin
                 {
                     new()
                     {
-                        Port = 80,
-                        TargetPort = 8080,
-                        Name = "http"
+                        Port = _settings.ServicePort,
+                        TargetPort = _settings.ContainerPort,
+                        Name = _settings.PortName
                     }
                 }
             }
@@ -305,9 +375,9 @@ public class KubernetesRuntimePlugin : IRuntimePlugin
         }
     }
 
-    private static string RenderExternalSecret(WorkloadPlan workload)
+    private string RenderExternalSecret(WorkloadPlan workload)
     {
-        var storeName = workload.ExternalSecretsStore ?? "default";
+        var storeName = workload.ExternalSecretsStore ?? _settings.ExternalSecretsStore;
         var dataEntries = string.Join("\n", workload.EnvironmentVariables.Select(kv =>
             $"    - secretKey: {kv.Key}\n      remoteRef:\n        key: {workload.AppName}-{workload.Environment}-{kv.Key.ToLowerInvariant().Replace("__", "-")}"));
 
@@ -318,10 +388,10 @@ public class KubernetesRuntimePlugin : IRuntimePlugin
               name: {workload.AppName}-env
               namespace: {workload.Namespace}
             spec:
-              refreshInterval: 1h
+              refreshInterval: {_settings.ExternalSecretsRefreshInterval}
               secretStoreRef:
                 name: {storeName}
-                kind: ClusterSecretStore
+                kind: {_settings.ExternalSecretsStoreKind}
               target:
                 name: {workload.AppName}-env
               data:

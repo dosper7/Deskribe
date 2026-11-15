@@ -5,6 +5,11 @@
 
 <MudText Typo="Typo.h4" Class="mb-4">Applications</MudText>
 
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4" ShowCloseIcon="true" CloseIconClicked="() => _error = null">@_error</MudAlert>
+}
+
 @if (_loading)
 {
     <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
@@ -43,6 +48,7 @@ else
 @code {
     private AppInfo[]? _apps;
     private bool _loading = true;
+    private string? _error;
 
     protected override async Task OnInitializedAsync()
     {
@@ -50,7 +56,10 @@ else
         {
             _apps = await Http.GetFromJsonAsync<AppInfo[]>("/api/apps");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load applications: {ex.Message}";
+        }
         finally
         {
             _loading = false;

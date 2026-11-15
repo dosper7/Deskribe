@@ -64,4 +64,11 @@ rootCommand.AddCommand(ApplyCommand.Create(engine));
 rootCommand.AddCommand(DestroyCommand.Create(engine));
 rootCommand.AddCommand(GenerateCommand.Create(engine));
 
-return await rootCommand.InvokeAsync(args);
+var exitCode = await rootCommand.InvokeAsync(args);
+
+// Ensure a failure signaled via Environment.ExitCode inside a handler is never
+// overwritten by a zero return code from the invocation pipeline.
+if (exitCode == 0 && Environment.ExitCode != 0)
+    exitCode = Environment.ExitCode;
+
+return exitCode;

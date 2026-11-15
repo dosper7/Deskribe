@@ -183,4 +183,33 @@ public class MergeEngineTests
         Assert.Equal("opaque", result.SecretsStrategy);
         Assert.Null(result.ExternalSecretsStore);
     }
+
+    [Fact]
+    public void MergeWorkloadPlan_UsesEngineDefaults_WhenNothingSpecified()
+    {
+        var defaults = new EngineDefaults
+        {
+            Replicas = 7,
+            Cpu = "100m",
+            Memory = "128Mi",
+            NamespacePattern = "{team}-{app}-{env}",
+            SecretsStrategy = "external-secrets"
+        };
+        var engine = new MergeEngine(NullLogger<MergeEngine>.Instance, defaults);
+
+        var manifest = CreateManifest();
+        var platform = CreatePlatform() with
+        {
+            Defaults = new PlatformDefaults()
+        };
+        var envConfig = new EnvironmentConfig { Name = "dev" };
+
+        var result = engine.MergeWorkloadPlan(manifest, platform, envConfig, "dev", null);
+
+        Assert.Equal(7, result.Replicas);
+        Assert.Equal("100m", result.Cpu);
+        Assert.Equal("128Mi", result.Memory);
+        Assert.Equal("default-test-app-dev", result.Namespace);
+        Assert.Equal("external-secrets", result.SecretsStrategy);
+    }
 }

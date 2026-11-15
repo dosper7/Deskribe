@@ -7,19 +7,12 @@ namespace Deskribe.Core.Merging;
 public class MergeEngine
 {
     private readonly ILogger<MergeEngine> _logger;
+    private readonly EngineDefaults _defaults;
 
-    // Sensible defaults when nothing is specified
-    private const string DefaultRuntime = "kubernetes";
-    private const string DefaultRegion = "westeurope";
-    private const int DefaultReplicas = 2;
-    private const string DefaultCpu = "250m";
-    private const string DefaultMemory = "512Mi";
-    private const string DefaultNamespacePattern = "{app}-{env}";
-    private const string DefaultSecretsStrategy = "opaque";
-
-    public MergeEngine(ILogger<MergeEngine> logger)
+    public MergeEngine(ILogger<MergeEngine> logger, EngineDefaults? defaults = null)
     {
         _logger = logger;
+        _defaults = defaults ?? new EngineDefaults();
     }
 
     public WorkloadPlan MergeWorkloadPlan(
@@ -32,9 +25,9 @@ public class MergeEngine
         _logger.LogInformation("Merging workload plan for {App} in {Env}", manifest.Name, environment);
 
         // Nullable-based 3-tier merge: platform -> environment -> developer
-        var replicas = envConfig.Defaults?.Replicas ?? platform.Defaults.Replicas ?? DefaultReplicas;
-        var cpu = envConfig.Defaults?.Cpu ?? platform.Defaults.Cpu ?? DefaultCpu;
-        var memory = envConfig.Defaults?.Memory ?? platform.Defaults.Memory ?? DefaultMemory;
+        var replicas = envConfig.Defaults?.Replicas ?? platform.Defaults.Replicas ?? _defaults.Replicas;
+        var cpu = envConfig.Defaults?.Cpu ?? platform.Defaults.Cpu ?? _defaults.Cpu;
+        var memory = envConfig.Defaults?.Memory ?? platform.Defaults.Memory ?? _defaults.Memory;
 
         // Developer per-env overrides win
         var service = manifest.Services.FirstOrDefault();
@@ -48,11 +41,8 @@ public class MergeEngine
                 memory = devOverride.Memory;
         }
 
-        var nsPattern = platform.Defaults.NamespacePattern ?? DefaultNamespacePattern;
-        var ns = nsPattern
-            .Replace("{team}", manifest.Team ?? "default")
-            .Replace("{app}", manifest.Name)
-            .Replace("{env}", environment);
+        var nsPattern = platform.Defaults.NamespacePattern ?? _defaults.NamespacePattern;
+        var ns = NamespaceInterpolator.Resolve(nsPattern, manifest.Team, manifest.Name, environment);
 
         return new WorkloadPlan
         {
@@ -65,7 +55,7 @@ public class MergeEngine
             Cpu = cpu,
             Memory = memory,
             EnvironmentVariables = service?.Env ?? new(),
-            SecretsStrategy = platform.Defaults.SecretsStrategy ?? DefaultSecretsStrategy,
+            SecretsStrategy = platform.Defaults.SecretsStrategy ?? _defaults.SecretsStrategy,
             ExternalSecretsStore = platform.Defaults.ExternalSecretsStore
         };
     }
@@ -74,12 +64,12 @@ public class MergeEngine
     {
         return new PlatformDefaults
         {
-            Runtime = envConfig.Defaults?.Runtime ?? platform.Defaults.Runtime ?? DefaultRuntime,
-            Region = envConfig.Defaults?.Region ?? platform.Defaults.Region ?? DefaultRegion,
-            Replicas = envConfig.Defaults?.Replicas ?? platform.Defaults.Replicas ?? DefaultReplicas,
-            Cpu = envConfig.Defaults?.Cpu ?? platform.Defaults.Cpu ?? DefaultCpu,
-            Memory = envConfig.Defaults?.Memory ?? platform.Defaults.Memory ?? DefaultMemory,
-            NamespacePattern = envConfig.Defaults?.NamespacePattern ?? platform.Defaults.NamespacePattern ?? DefaultNamespacePattern,
+            Runtime = envConfig.Defaults?.Runtime ?? platform.Defaults.Runtime ?? _defaults.Runtime,
+            Region = envConfig.Defaults?.Region ?? platform.Defaults.Region ?? _defaults.Region,
+            Replicas = envConfig.Defaults?.Replicas ?? platform.Defaults.Replicas ?? _defaults.Replicas,
+            Cpu = envConfig.Defaults?.Cpu ?? platform.Defaults.Cpu ?? _defaults.Cpu,
+            Memory = envConfig.Defaults?.Memory ?? platform.Defaults.Memory ?? _defaults.Memory,
+            NamespacePattern = envConfig.Defaults?.NamespacePattern ?? platform.Defaults.NamespacePattern ?? _defaults.NamespacePattern,
             Ha = envConfig.Defaults?.Ha ?? platform.Defaults.Ha
         };
     }

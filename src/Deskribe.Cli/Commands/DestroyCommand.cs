@@ -19,6 +19,12 @@ public static class DestroyCommand
 
         command.SetHandler(async (file, env, platform) =>
         {
+            if (!CommandHelpers.ValidateInputs(file, platform))
+            {
+                Environment.ExitCode = 1;
+                return;
+            }
+
             try
             {
                 Console.ForegroundColor = ConsoleColor.Yellow;

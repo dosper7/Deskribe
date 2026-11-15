@@ -22,9 +22,15 @@ public static class PlanCommand
 
         command.SetHandler(async (file, env, platform, images) =>
         {
+            if (!CommandHelpers.ValidateInputs(file, platform))
+            {
+                Environment.ExitCode = 1;
+                return;
+            }
+
             try
             {
-                var imageMap = ParseImages(images);
+                var imageMap = CommandHelpers.ParseImages(images);
                 var plan = await engine.PlanAsync(file, platform, env, imageMap);
 
                 Console.WriteLine($"Plan for '{plan.AppName}' in '{plan.Environment}':");
@@ -84,21 +90,7 @@ public static class PlanCommand
     }
 
     internal static Dictionary<string, string>? ParseImages(string[]? images)
-    {
-        if (images is null || images.Length == 0)
-            return null;
-
-        var map = new Dictionary<string, string>();
-        foreach (var img in images)
-        {
-            var eqIndex = img.IndexOf('=');
-            if (eqIndex > 0)
-            {
-                map[img[..eqIndex]] = img[(eqIndex + 1)..];
-            }
-        }
-        return map.Count > 0 ? map : null;
-    }
+        => CommandHelpers.ParseImages(images);
 
     private static string FormatValue(object? value)
     {

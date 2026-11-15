@@ -10,6 +10,11 @@ public partial class ResourceReferenceResolver
     [GeneratedRegex(@"@resource\((?<type>[a-zA-Z0-9_.]+)\)\.(?<property>[a-zA-Z0-9_]+)")]
     private static partial Regex ResourceRefPattern();
 
+    /// <summary>
+    /// The canonical pattern for a resource reference: @resource({type}).{property}
+    /// </summary>
+    public static Regex ReferencePattern => ResourceRefPattern();
+
     public ResourceReferenceResolver(ILogger<ResourceReferenceResolver> logger)
     {
         _logger = logger;

@@ -6,25 +6,21 @@ namespace Deskribe.Plugins.Provisioner.Terraform;
 
 public class TerraformProvisioner : IProvisioner
 {
+    // Used only when the plan carries no region (Platform.Defaults.Region).
+    private const string DefaultRegion = "westeurope";
+
     public string Name => "terraform";
 
     public Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
     {
-        // Terraform provisioner generates artifacts then runs terraform apply
-        // For now, we produce planned outputs (actual TF execution would be external)
-        var outputs = new Dictionary<string, Dictionary<string, string>>();
-
-        foreach (var rp in plan.ResourcePlans)
-        {
-            outputs[rp.ResourceType] = rp.PlannedOutputs;
-        }
-
-        Console.WriteLine($"[Terraform] Planned {plan.ResourcePlans.Count} resources for {plan.AppName}-{plan.Environment}");
+        // Deskribe does not shell out to the Terraform CLI; it only generates
+        // artifacts. Applying is an explicit external step.
+        Console.WriteLine($"[Terraform] Not executing terraform apply for {plan.AppName}-{plan.Environment}; generate artifacts and apply with the Terraform CLI.");
 
         return Task.FromResult(new ProvisionResult
         {
-            Success = true,
-            ResourceOutputs = outputs
+            Success = false,
+            Errors = ["Terraform apply is not executed by Deskribe; run 'deskribe generate --output-format terraform-only' and apply with the Terraform CLI."]
         });
     }
 
@@ -37,7 +33,7 @@ public class TerraformProvisioner : IProvisioner
         {
             ["app_name"] = plan.AppName,
             ["environment"] = plan.Environment,
-            ["region"] = plan.Platform.Defaults.Region ?? "westeurope"
+            ["region"] = plan.Platform.Defaults.Region ?? DefaultRegion
         };
 
         foreach (var rp in plan.ResourcePlans)
@@ -88,7 +84,9 @@ public class TerraformProvisioner : IProvisioner
 
     public Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)
     {
-        Console.WriteLine($"[Terraform] Destroy for {appName}-{environment} would run: terraform destroy");
+        // No-op: Deskribe does not shell out to the Terraform CLI; destroy the
+        // generated stack externally (terraform destroy).
+        Console.WriteLine($"[Terraform] Destroy is a no-op in Deskribe; run 'terraform destroy' for {appName}-{environment} with the Terraform CLI.");
         return Task.CompletedTask;
     }
 

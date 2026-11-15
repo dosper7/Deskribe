@@ -9,7 +9,7 @@ public static class ValidateCommand
     {
         var command = new Command("validate", "Validate a deskribe.json manifest against platform config");
 
-        var fileOption = new Option<string>(["-f", "--file"], "Path to deskribe.json") { IsRequired = true };
+        var fileOption = new Option<string>(["-f", "--file"], () => "deskribe.json", "Path to deskribe.json");
         var envOption = new Option<string>("--env", "Target environment") { IsRequired = true };
         var platformOption = new Option<string>("--platform", "Path to platform config directory") { IsRequired = true };
 
@@ -19,6 +19,12 @@ public static class ValidateCommand
 
         command.SetHandler(async (file, env, platform) =>
         {
+            if (!CommandHelpers.ValidateInputs(file, platform))
+            {
+                Environment.ExitCode = 1;
+                return;
+            }
+
             try
             {
                 var result = await engine.ValidateAsync(file, platform, env);
@@ -35,6 +41,8 @@ public static class ValidateCommand
                         Console.WriteLine($"  Warning: {warning}");
                         Console.ResetColor();
                     }
+
+                    return;
                 }
                 else
                 {
