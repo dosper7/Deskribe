@@ -1,6 +1,8 @@
 {
   "name": "dev",
-  "replicas": 2,
-  "cpu": "250m",
-  "memory": "512Mi"
+  "defaults": {
+    "replicas": 2,
+    "cpu": "250m",
+    "memory": "512Mi"
+  }
 }

@@ -25,6 +25,7 @@ public static class DeskribeServiceExtensions
 
     private static IServiceCollection AddDeskribeCore(IServiceCollection services, Assembly[] pluginAssemblies)
     {
+        services.AddSingleton<EngineDefaults>();
         services.AddSingleton<ConfigLoader>();
         services.AddSingleton<MergeEngine>();
         services.AddSingleton<ResourceReferenceResolver>();

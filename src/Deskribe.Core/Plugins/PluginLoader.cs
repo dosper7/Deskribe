@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.Loader;
+using Microsoft.Extensions.Logging;
 
 namespace Deskribe.Core.Plugins;
 
@@ -8,7 +9,10 @@ public static class PluginLoader
     public static string DefaultPluginsDirectory =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".deskribe", "plugins");
 
-    public static Assembly[] LoadFromDirectories(params string[] dirs)
+    public static Assembly[] LoadFromDirectories(params string[] dirs) =>
+        LoadFromDirectories(logger: null, dirs);
+
+    public static Assembly[] LoadFromDirectories(ILogger? logger, params string[] dirs)
     {
         var assemblies = new List<Assembly>();
 
@@ -24,9 +28,10 @@ public static class PluginLoader
                     var assembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.GetFullPath(dll));
                     assemblies.Add(assembly);
                 }
-                catch
+                catch (Exception ex)
                 {
-                    // Silently skip DLLs that fail to load (native deps, wrong TFM, etc.)
+                    // Skip DLLs that fail to load (native deps, wrong TFM, etc.), but don't stay silent
+                    logger?.LogWarning("Skipping plugin DLL '{Dll}': {Error}", dll, ex.Message);
                 }
             }
         }

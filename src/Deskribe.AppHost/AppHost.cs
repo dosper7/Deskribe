@@ -12,8 +12,10 @@ var builder = DistributedApplication.CreateBuilder(args);
 // The same manifest later drives production infra via Pulumi/Terraform.
 // Developer writes ONE file. Deskribe translates it everywhere.
 // ------------------------------------------------------------------
-var manifestPath = builder.Configuration["Deskribe:ManifestPath"]
-    ?? Path.Combine(builder.AppHostDirectory, "..", "..", "examples", "payments-api", "deskribe.json");
+var configuredPath = builder.Configuration["Deskribe:ManifestPath"];
+var manifestPath = configuredPath is not null
+    ? Path.GetFullPath(Path.Combine(builder.AppHostDirectory, configuredPath))
+    : Path.Combine(builder.AppHostDirectory, "..", "..", "examples", "payments-api", "deskribe.json");
 
 var resources = builder.AddDeskribeManifest(manifestPath);
 

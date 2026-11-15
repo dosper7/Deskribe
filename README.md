@@ -63,7 +63,7 @@ Create `deskribe.json` in your service repo:
       "env": {
         "ConnectionStrings__Postgres": "@resource(postgres).connectionString",
         "Redis__Endpoint": "@resource(redis).endpoint",
-        "Kafka__Servers": "@resource(kafka.messaging).endpoint"
+        "Kafka__BootstrapServers": "@resource(kafka.messaging).endpoint"
       },
       "overrides": {
         "dev": { "replicas": 1, "cpu": "250m", "memory": "512Mi" },
@@ -484,6 +484,18 @@ deskribe apply \
 # Or apply the generated Kustomize overlays directly:
 kubectl apply -k output/payments-api/overlays/prod
 ```
+
+---
+
+## Documentation
+
+- [Configuration Reference](docs/configuration-reference.md) — manifest & platform config schema, token substitution
+- [Examples Guide](examples/README.md) — walkthrough of the payments-api and platform-config samples
+- [CI/CD Integration](docs/cicd-integration.md)
+- [Aspire Integration](docs/aspire-integration.md)
+- [Platform Teams](docs/platform-teams.md)
+- [Plugin Development](docs/plugin-development.md)
+- [System Design](docs/system-design.md)
 
 ---
 

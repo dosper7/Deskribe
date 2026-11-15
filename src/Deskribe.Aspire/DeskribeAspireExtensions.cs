@@ -23,6 +23,17 @@ public static class DeskribeAspireExtensions
         ["kafka.messaging"] = new KafkaAspireProjection()
     };
 
+    /// <summary>
+    /// Registers (or overrides) the projection used for a resource type, so consumers
+    /// can extend the built-in defaults without editing the library.
+    /// </summary>
+    public static void RegisterProjection(string resourceType, IAspireProjection projection)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(resourceType);
+        ArgumentNullException.ThrowIfNull(projection);
+        DefaultProjections[resourceType] = projection;
+    }
+
     public static DeskribeResourceMap AddDeskribeManifest(
         this IDistributedApplicationBuilder builder,
         string manifestPath,

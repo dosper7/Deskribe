@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using Deskribe.Sdk;
 using Microsoft.Extensions.Logging;
@@ -7,9 +8,9 @@ namespace Deskribe.Core.Plugins;
 public class PluginRegistry : IPluginRegistrar
 {
     private readonly ILogger<PluginRegistry> _logger;
-    private readonly Dictionary<string, IResourceProvider> _resourceProviders = new();
-    private readonly Dictionary<string, IProvisioner> _provisioners = new();
-    private readonly Dictionary<string, IRuntimePlugin> _runtimePlugins = new();
+    private readonly ConcurrentDictionary<string, IResourceProvider> _resourceProviders = new();
+    private readonly ConcurrentDictionary<string, IProvisioner> _provisioners = new();
+    private readonly ConcurrentDictionary<string, IRuntimePlugin> _runtimePlugins = new();
 
     public PluginRegistry(ILogger<PluginRegistry> logger)
     {
@@ -51,7 +52,17 @@ public class PluginRegistry : IPluginRegistrar
 
             foreach (var type in pluginTypes)
             {
-                var plugin = (IPlugin)Activator.CreateInstance(type)!;
+                IPlugin plugin;
+                try
+                {
+                    plugin = (IPlugin)Activator.CreateInstance(type)!;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to instantiate plugin type {PluginType}", type.FullName);
+                    throw new InvalidOperationException(
+                        $"Failed to instantiate plugin type '{type.FullName}': {ex.Message}", ex);
+                }
                 RegisterPlugin(plugin);
             }
         }

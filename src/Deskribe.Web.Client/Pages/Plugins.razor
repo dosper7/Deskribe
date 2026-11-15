@@ -5,6 +5,11 @@
 
 <MudText Typo="Typo.h4" Class="mb-4">Plugins & Schemas</MudText>
 
+@if (_error is not null)
+{
+    <MudAlert Severity="Severity.Error" Class="mb-4" ShowCloseIcon="true" CloseIconClicked="() => _error = null">@_error</MudAlert>
+}
+
 @if (_loading)
 {
     <MudProgressCircular Indeterminate="true" Color="Color.Primary" />
@@ -52,6 +57,7 @@ else if (_schemas is not null)
 @code {
     private ResourceSchema[]? _schemas;
     private bool _loading = true;
+    private string? _error;
 
     protected override async Task OnInitializedAsync()
     {
@@ -59,7 +65,10 @@ else if (_schemas is not null)
         {
             _schemas = await Http.GetFromJsonAsync<ResourceSchema[]>("/api/plugins");
         }
-        catch { }
+        catch (Exception ex)
+        {
+            _error = $"Failed to load plugins: {ex.Message}";
+        }
         finally { _loading = false; }
     }
 }

@@ -1,3 +1,4 @@
+using Deskribe.Core.Resolution;
 using Deskribe.Sdk.Models;
 using Microsoft.Extensions.Logging;
 
@@ -36,17 +37,20 @@ public class PolicyValidator
         {
             foreach (var (envKey, envValue) in service.Env)
             {
-                if (envValue.StartsWith("@resource("))
+                if (!envValue.Contains("@resource("))
+                    continue;
+
+                var match = ResourceReferenceResolver.ReferencePattern.Match(envValue);
+                if (!match.Success)
                 {
-                    var match = System.Text.RegularExpressions.Regex.Match(envValue, @"@resource\(([^)]+)\)");
-                    if (match.Success)
-                    {
-                        var refType = match.Groups[1].Value;
-                        if (!resourceTypes.Contains(refType))
-                        {
-                            errors.Add($"Service env var '{envKey}' references resource type '{refType}' which is not declared in resources");
-                        }
-                    }
+                    errors.Add($"Service env var '{envKey}' contains a malformed resource reference: '{envValue}'. Expected format: @resource(<type>).<property>");
+                    continue;
+                }
+
+                var refType = match.Groups["type"].Value;
+                if (!resourceTypes.Contains(refType))
+                {
+                    errors.Add($"Service env var '{envKey}' references resource type '{refType}' which is not declared in resources");
                 }
             }
         }

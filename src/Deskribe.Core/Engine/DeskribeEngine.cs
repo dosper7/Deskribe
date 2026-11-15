@@ -18,6 +18,7 @@ public class DeskribeEngine
     private readonly ResourceReferenceResolver _resolver;
     private readonly PolicyValidator _validator;
     private readonly PluginRegistry _pluginRegistry;
+    private readonly EngineDefaults _defaults;
     private readonly ILogger<DeskribeEngine> _logger;
 
     public DeskribeEngine(
@@ -26,7 +27,8 @@ public class DeskribeEngine
         ResourceReferenceResolver resolver,
         PolicyValidator validator,
         PluginRegistry pluginRegistry,
-        ILogger<DeskribeEngine> logger)
+        ILogger<DeskribeEngine> logger,
+        EngineDefaults? defaults = null)
     {
         _configLoader = configLoader;
         _mergeEngine = mergeEngine;
@@ -34,6 +36,7 @@ public class DeskribeEngine
         _validator = validator;
         _pluginRegistry = pluginRegistry;
         _logger = logger;
+        _defaults = defaults ?? new EngineDefaults();
     }
 
     public async Task<SdkValidationResult> ValidateAsync(
@@ -49,12 +52,11 @@ public class DeskribeEngine
         if (!policyResult.IsValid)
             return policyResult;
 
-        // Validate resource references
-        var service = manifest.Services.FirstOrDefault();
-        if (service is not null)
+        // Validate resource references across all services
+        var resourceTypes = manifest.Resources.Select(r => r.Type).ToHashSet();
+        foreach (var service in manifest.Services)
         {
             var refs = _resolver.ExtractReferences(service.Env);
-            var resourceTypes = manifest.Resources.Select(r => r.Type).ToHashSet();
             var refValidation = _resolver.ValidateReferences(refs, resourceTypes);
             if (!refValidation.IsValid)
             {
@@ -111,9 +113,9 @@ public class DeskribeEngine
         string? image = null;
         if (images is not null)
         {
-            // Try service name first, then "api" as default
+            // Try service name first, then the configured default service name
             var service = manifest.Services.FirstOrDefault();
-            var serviceName = service?.Name ?? "api";
+            var serviceName = service?.Name ?? _defaults.DefaultServiceName;
             images.TryGetValue(serviceName, out image);
         }
 
@@ -131,6 +133,12 @@ public class DeskribeEngine
 
         var resourcePlans = new List<ResourcePlanResult>();
         var warnings = new List<string>();
+
+        if (manifest.Services.Count > 1)
+        {
+            _logger.LogWarning("Manifest declares {Count} services; only the first is deployed by this engine", manifest.Services.Count);
+            warnings.Add($"Manifest declares {manifest.Services.Count} services; only the first service is deployed.");
+        }
 
         foreach (var resource in manifest.Resources)
         {
@@ -311,7 +319,7 @@ public class DeskribeEngine
         return allFiles;
     }
 
-    private static List<GeneratedFile> GenerateKustomizeStructure(DeskribePlan plan, RuntimeArtifact artifact, string outputDir)
+    private List<GeneratedFile> GenerateKustomizeStructure(DeskribePlan plan, RuntimeArtifact artifact, string outputDir)
     {
         var files = new List<GeneratedFile>();
         var appDir = plan.Team is not null
@@ -394,7 +402,7 @@ public class DeskribeEngine
                       value: {workload.Replicas}
                     - op: replace
                       path: /spec/template/spec/containers/0/image
-                      value: {workload.Image ?? "nginx:latest"}
+                      value: {workload.Image ?? _defaults.DefaultImage}
                     - op: replace
                       path: /spec/template/spec/containers/0/resources/requests/cpu
                       value: {workload.Cpu}
@@ -430,10 +438,8 @@ public class DeskribeEngine
         var runtime = _pluginRegistry.GetRuntimePlugin(runtimeName);
         if (runtime is not null)
         {
-            var nsPattern = platform.Defaults.NamespacePattern ?? "{app}-{env}";
-            var ns = nsPattern
-                .Replace("{app}", manifest.Name)
-                .Replace("{env}", environment);
+            var nsPattern = platform.Defaults.NamespacePattern ?? _defaults.NamespacePattern;
+            var ns = NamespaceInterpolator.Resolve(nsPattern, manifest.Team, manifest.Name, environment);
             await runtime.DestroyAsync(ns, ct);
         }
 

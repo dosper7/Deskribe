@@ -6,6 +6,9 @@ namespace Deskribe.Plugins.Provisioner.Pulumi;
 
 public class PulumiProvisioner : IProvisioner
 {
+    // Used only when the plan carries no region (Platform.Defaults.Region).
+    private const string DefaultRegion = "westeurope";
+
     public string Name => "pulumi";
 
     public async Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
@@ -45,7 +48,7 @@ public class PulumiProvisioner : IProvisioner
             await workspace.SetConfigAsync("environment",
                 new global::Pulumi.Automation.ConfigValue(plan.Environment), ct);
             await workspace.SetConfigAsync("region",
-                new global::Pulumi.Automation.ConfigValue(plan.Platform.Defaults.Region ?? "westeurope"), ct);
+                new global::Pulumi.Automation.ConfigValue(plan.Platform.Defaults.Region ?? DefaultRegion), ct);
 
             // Set resource-specific config
             foreach (var resourcePlan in plan.ResourcePlans)
@@ -108,7 +111,7 @@ public class PulumiProvisioner : IProvisioner
         {
             ["appName"] = plan.AppName,
             ["environment"] = plan.Environment,
-            ["region"] = plan.Platform.Defaults.Region ?? "westeurope"
+            ["region"] = plan.Platform.Defaults.Region ?? DefaultRegion
         };
 
         foreach (var rp in plan.ResourcePlans)

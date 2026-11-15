@@ -26,9 +26,15 @@ public static class GenerateCommand
 
         command.SetHandler(async (file, env, platform, outputDir, images, outputFormat) =>
         {
+            if (!CommandHelpers.ValidateInputs(file, platform))
+            {
+                Environment.ExitCode = 1;
+                return;
+            }
+
             try
             {
-                var imageMap = PlanCommand.ParseImages(images);
+                var imageMap = CommandHelpers.ParseImages(images);
                 var files = await engine.GenerateAsync(file, platform, env, outputDir, imageMap, outputFormat);
 
                 Console.ForegroundColor = ConsoleColor.Green;
