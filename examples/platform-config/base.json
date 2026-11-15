@@ -5,12 +5,38 @@
     "replicas": 2,
     "cpu": "250m",
     "memory": "512Mi",
-    "namespacePattern": "{app}-{env}"
+    "namespacePattern": "{app}-{env}",
+    "secretsStrategy": "opaque"
   },
   "runtime": {
     "name": "kubernetes",
     "config": {
-      "namespacePattern": "{app}-{env}"
+      "containerPort": 8080,
+      "servicePort": 80,
+      "healthPath": "/health",
+      "rolloutTimeoutSeconds": 300
+    }
+  },
+  "resources": {
+    "postgres": {
+      "validSizes": [
+        "s",
+        "m",
+        "l"
+      ],
+      "validVersions": [
+        "15",
+        "16",
+        "17"
+      ],
+      "defaultVersion": "16"
+    },
+    "redis": {
+      "validSizes": [
+        "s",
+        "m",
+        "l"
+      ]
     }
   },
   "provisionerConfigs": {
@@ -50,7 +76,15 @@
     "kafka.messaging": "pulumi"
   },
   "policies": {
-    "allowedRegions": ["westeurope", "northeurope", "eastus2"],
-    "enforceTLS": true
+    "allowedRegions": [
+      "westeurope",
+      "northeurope",
+      "eastus2"
+    ],
+    "limits": {
+      "maxReplicas": 10,
+      "maxCpu": "2",
+      "maxMemory": "4Gi"
+    }
   }
 }

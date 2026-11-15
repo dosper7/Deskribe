@@ -1,5 +1,4 @@
 using Deskribe.Core.Merging;
-using Deskribe.Sdk;
 using Deskribe.Sdk.Models;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -7,209 +6,164 @@ namespace Deskribe.Core.Tests;
 
 public class MergeEngineTests
 {
-    private readonly MergeEngine _engine = new(NullLogger<MergeEngine>.Instance);
+    private readonly MergeEngine _merge = new(NullLogger<MergeEngine>.Instance);
 
-    private static DeskribeManifest CreateManifest(ServiceOverride? devOverride = null, ServiceOverride? prodOverride = null)
+    private static readonly PlatformDefaults FullBase = new()
     {
-        var overrides = new Dictionary<string, ServiceOverride>();
-        if (devOverride is not null) overrides["dev"] = devOverride;
-        if (prodOverride is not null) overrides["prod"] = prodOverride;
-
-        return new DeskribeManifest
-        {
-            Name = "test-app",
-            Resources = [new ResourceDescriptor { Type = "postgres", Size = "m" }],
-            Services =
-            [
-                new ServiceDefinition
-                {
-                    Env = new Dictionary<string, string>
-                    {
-                        ["DB"] = "@resource(postgres).connectionString"
-                    },
-                    Overrides = overrides
-                }
-            ]
-        };
-    }
-
-    private static PlatformConfig CreatePlatform() => new()
-    {
-        Organization = "acme",
-        Defaults = new PlatformDefaults
-        {
-            Runtime = "kubernetes",
-            Region = "westeurope",
-            Replicas = 2,
-            Cpu = "250m",
-            Memory = "512Mi",
-            NamespacePattern = "{app}-{env}"
-        },
-        Provisioners = new Dictionary<string, string> { ["postgres"] = "pulumi" }
+        Runtime = "base-rt", Region = "base-region", Replicas = 2, Cpu = "100m", Memory = "128Mi",
+        NamespacePattern = "base-{app}", Ha = false, SecretsStrategy = "opaque", ExternalSecretsStore = "base-store"
     };
 
     [Fact]
-    public void MergeWorkloadPlan_UsePlatformDefaults_WhenNoOverrides()
+    public void EnvironmentValueWinsForEveryField()
     {
-        var manifest = CreateManifest();
-        var platform = CreatePlatform();
-        var envConfig = new EnvironmentConfig { Name = "dev" };
-
-        var result = _engine.MergeWorkloadPlan(manifest, platform, envConfig, "dev", null);
-
-        Assert.Equal("test-app", result.AppName);
-        Assert.Equal("dev", result.Environment);
-        Assert.Equal("test-app-dev", result.Namespace);
-        Assert.Equal(2, result.Replicas);
-        Assert.Equal("250m", result.Cpu);
-        Assert.Equal("512Mi", result.Memory);
-        Assert.Null(result.Image);
-    }
-
-    [Fact]
-    public void MergeWorkloadPlan_EnvironmentOverridesPlatform()
-    {
-        var manifest = CreateManifest();
-        var platform = CreatePlatform();
-        var envConfig = new EnvironmentConfig
+        var env = new EnvironmentConfig
         {
-            Name = "prod",
             Defaults = new PlatformDefaults
             {
-                Replicas = 5,
-                Cpu = "1000m",
-                Memory = "2Gi"
+                Runtime = "env-rt", Region = "env-region", Replicas = 5, Cpu = "1", Memory = "1Gi",
+                NamespacePattern = "{team}-{app}-{env}", Ha = true, SecretsStrategy = "external-secrets", ExternalSecretsStore = "vault"
             }
         };
 
-        var result = _engine.MergeWorkloadPlan(manifest, platform, envConfig, "prod", null);
+        var merged = _merge.MergeDefaults(new PlatformConfig { Defaults = FullBase }, env);
 
-        Assert.Equal(5, result.Replicas);
-        Assert.Equal("1000m", result.Cpu);
-        Assert.Equal("2Gi", result.Memory);
+        Assert.Equal(env.Defaults, merged);
     }
 
     [Fact]
-    public void MergeWorkloadPlan_DeveloperOverridesEnvironment()
+    public void BaseValueUsedWhenEnvironmentSilent()
     {
-        var manifest = CreateManifest(
-            prodOverride: new ServiceOverride { Replicas = 3, Cpu = "500m", Memory = "1Gi" });
-        var platform = CreatePlatform();
-        var envConfig = new EnvironmentConfig
+        var merged = _merge.MergeDefaults(new PlatformConfig { Defaults = FullBase }, new EnvironmentConfig());
+        Assert.Equal(FullBase, merged);
+    }
+
+    [Fact]
+    public void EngineDefaultsUsedWhenNothingSet()
+    {
+        var engineDefaults = new EngineDefaults { ExternalSecretsStore = "engine-store" };
+        var merge = new MergeEngine(NullLogger<MergeEngine>.Instance, engineDefaults);
+
+        var merged = merge.MergeDefaults(new PlatformConfig(), new EnvironmentConfig());
+
+        Assert.Equal("kubernetes", merged.Runtime);
+        Assert.Equal("westeurope", merged.Region);
+        Assert.Equal(2, merged.Replicas);
+        Assert.Equal("250m", merged.Cpu);
+        Assert.Equal("512Mi", merged.Memory);
+        Assert.Equal("{app}-{env}", merged.NamespacePattern);
+        Assert.False(merged.Ha);
+        Assert.Equal("opaque", merged.SecretsStrategy);
+        Assert.Equal("engine-store", merged.ExternalSecretsStore);
+    }
+
+    [Fact]
+    public void EnvironmentLevelRegionSecretsStrategyAndNamespacePatternAreHonoured()
+    {
+        var env = new EnvironmentConfig
         {
-            Name = "prod",
-            Defaults = new PlatformDefaults
+            Defaults = new PlatformDefaults { Region = "eastus2", SecretsStrategy = "external-secrets", NamespacePattern = "{env}-{app}" }
+        };
+
+        var merged = _merge.MergeDefaults(new PlatformConfig { Defaults = FullBase }, env);
+
+        Assert.Equal("eastus2", merged.Region);
+        Assert.Equal("external-secrets", merged.SecretsStrategy);
+        Assert.Equal("{env}-{app}", merged.NamespacePattern);
+        Assert.Equal("dev-shop", MergeEngine.ResolveNamespace(merged, null, "shop", "dev"));
+    }
+
+    [Fact]
+    public void NamespaceUsesDefaultTeamWhenTeamMissing()
+    {
+        var d = new PlatformDefaults { NamespacePattern = "{team}-{app}-{env}" };
+        Assert.Equal("default-shop-dev", MergeEngine.ResolveNamespace(d, null, "shop", "dev"));
+        Assert.Equal("pay-shop-dev", MergeEngine.ResolveNamespace(d, "pay", "shop", "dev"));
+    }
+
+    [Fact]
+    public void ServiceOverridesForTargetEnvironmentWin()
+    {
+        var service = new ServiceDefinition
+        {
+            Overrides = new()
             {
-                Replicas = 5,
-                Cpu = "1000m",
-                Memory = "2Gi"
+                ["prod"] = new ServiceOverride { Replicas = 4, Cpu = "1" },
+                ["dev"] = new ServiceOverride { Memory = "2Gi" }
             }
         };
+        var defaults = new PlatformDefaults { Replicas = 2, Cpu = "250m", Memory = "512Mi" };
 
-        var result = _engine.MergeWorkloadPlan(manifest, platform, envConfig, "prod", null);
-
-        // Developer override wins
-        Assert.Equal(3, result.Replicas);
-        Assert.Equal("500m", result.Cpu);
-        Assert.Equal("1Gi", result.Memory);
+        Assert.Equal((4, "1", "512Mi"), MergeEngine.ResolveSizing(service, defaults, "prod"));
+        Assert.Equal((2, "250m", "2Gi"), MergeEngine.ResolveSizing(service, defaults, "dev"));
+        Assert.Equal((2, "250m", "512Mi"), MergeEngine.ResolveSizing(service, defaults, "staging"));
     }
 
     [Fact]
-    public void MergeWorkloadPlan_SetsImageWhenProvided()
+    public void SingleServiceWorkloadIsNamedAfterApp()
     {
-        var manifest = CreateManifest();
-        var platform = CreatePlatform();
-        var envConfig = new EnvironmentConfig { Name = "dev" };
+        var unnamed = new DeskribeManifest { Name = "shop", Services = [new ServiceDefinition()] };
+        var named = new DeskribeManifest { Name = "shop", Services = [new ServiceDefinition { Name = "api" }] };
 
-        var result = _engine.MergeWorkloadPlan(manifest, platform, envConfig, "dev", "ghcr.io/acme/api:sha-123");
-
-        Assert.Equal("ghcr.io/acme/api:sha-123", result.Image);
+        Assert.Equal("shop", MergeEngine.GetWorkloadName(unnamed, unnamed.Services[0]));
+        Assert.Equal("shop", MergeEngine.GetWorkloadName(named, named.Services[0]));
     }
 
     [Fact]
-    public void MergeWorkloadPlan_NamespacePatternResolved()
+    public void MultiServiceWorkloadsAreAppDashService()
     {
-        var manifest = CreateManifest();
-        var platform = CreatePlatform();
-        var envConfig = new EnvironmentConfig { Name = "staging" };
-
-        var result = _engine.MergeWorkloadPlan(manifest, platform, envConfig, "staging", null);
-
-        Assert.Equal("test-app-staging", result.Namespace);
-    }
-
-    [Fact]
-    public void MergeWorkloadPlan_PreservesEnvVars()
-    {
-        var manifest = CreateManifest();
-        var platform = CreatePlatform();
-        var envConfig = new EnvironmentConfig { Name = "dev" };
-
-        var result = _engine.MergeWorkloadPlan(manifest, platform, envConfig, "dev", null);
-
-        Assert.Contains("DB", result.EnvironmentVariables.Keys);
-        Assert.Equal("@resource(postgres).connectionString", result.EnvironmentVariables["DB"]);
-    }
-
-    [Fact]
-    public void MergeWorkloadPlan_PropagatesSecretsStrategy()
-    {
-        var manifest = CreateManifest();
-        var platform = CreatePlatform() with
+        var m = new DeskribeManifest
         {
-            Defaults = CreatePlatform().Defaults with
-            {
-                SecretsStrategy = "external-secrets",
-                ExternalSecretsStore = "azure-keyvault"
-            }
+            Name = "shop",
+            Services = [new ServiceDefinition { Name = "api" }, new ServiceDefinition { Name = "worker" }, new ServiceDefinition()]
         };
-        var envConfig = new EnvironmentConfig { Name = "dev" };
 
-        var result = _engine.MergeWorkloadPlan(manifest, platform, envConfig, "dev", null);
-
-        Assert.Equal("external-secrets", result.SecretsStrategy);
-        Assert.Equal("azure-keyvault", result.ExternalSecretsStore);
+        Assert.Equal("shop-api", MergeEngine.GetWorkloadName(m, m.Services[0]));
+        Assert.Equal("shop-worker", MergeEngine.GetWorkloadName(m, m.Services[1]));
+        Assert.Null(MergeEngine.GetWorkloadName(m, m.Services[2]));
     }
 
     [Fact]
-    public void MergeWorkloadPlan_DefaultsSecretsStrategyToOpaque()
+    public void ImageLookupByServiceNameThenWorkloadName()
     {
-        var manifest = CreateManifest();
-        var platform = CreatePlatform();
-        var envConfig = new EnvironmentConfig { Name = "dev" };
+        var m = new DeskribeManifest
+        {
+            Name = "shop",
+            Services = [new ServiceDefinition { Name = "api" }, new ServiceDefinition { Name = "worker" }]
+        };
+        var images = new Dictionary<string, string> { ["api"] = "api:1", ["shop-worker"] = "worker:1", ["other"] = "x" };
 
-        var result = _engine.MergeWorkloadPlan(manifest, platform, envConfig, "dev", null);
-
-        Assert.Equal("opaque", result.SecretsStrategy);
-        Assert.Null(result.ExternalSecretsStore);
+        Assert.Equal("api:1", MergeEngine.FindImage(m, m.Services[0], "shop-api", images));
+        Assert.Equal("worker:1", MergeEngine.FindImage(m, m.Services[1], "shop-worker", images));
     }
 
     [Fact]
-    public void MergeWorkloadPlan_UsesEngineDefaults_WhenNothingSpecified()
+    public void ServiceNameTakesPrecedenceOverWorkloadName()
     {
-        var defaults = new EngineDefaults
+        var m = new DeskribeManifest { Name = "shop", Services = [new ServiceDefinition { Name = "api" }] };
+        var images = new Dictionary<string, string> { ["shop"] = "by-workload", ["api"] = "by-service" };
+        Assert.Equal("by-service", MergeEngine.FindImage(m, m.Services[0], "shop", images));
+    }
+
+    [Fact]
+    public void SingleServiceWithSingleImageUsesItWhateverTheKey()
+    {
+        var m = new DeskribeManifest { Name = "shop", Services = [new ServiceDefinition()] };
+        Assert.Equal("img:1", MergeEngine.FindImage(m, m.Services[0], "shop", new Dictionary<string, string> { ["anything"] = "img:1" }));
+    }
+
+    [Fact]
+    public void ImageIsNullWhenAmbiguousOrMissing()
+    {
+        var single = new DeskribeManifest { Name = "shop", Services = [new ServiceDefinition()] };
+        var multi = new DeskribeManifest
         {
-            Replicas = 7,
-            Cpu = "100m",
-            Memory = "128Mi",
-            NamespacePattern = "{team}-{app}-{env}",
-            SecretsStrategy = "external-secrets"
+            Name = "shop",
+            Services = [new ServiceDefinition { Name = "api" }, new ServiceDefinition { Name = "worker" }]
         };
-        var engine = new MergeEngine(NullLogger<MergeEngine>.Instance, defaults);
 
-        var manifest = CreateManifest();
-        var platform = CreatePlatform() with
-        {
-            Defaults = new PlatformDefaults()
-        };
-        var envConfig = new EnvironmentConfig { Name = "dev" };
-
-        var result = engine.MergeWorkloadPlan(manifest, platform, envConfig, "dev", null);
-
-        Assert.Equal(7, result.Replicas);
-        Assert.Equal("100m", result.Cpu);
-        Assert.Equal("128Mi", result.Memory);
-        Assert.Equal("default-test-app-dev", result.Namespace);
-        Assert.Equal("external-secrets", result.SecretsStrategy);
+        Assert.Null(MergeEngine.FindImage(single, single.Services[0], "shop", new Dictionary<string, string> { ["a"] = "1", ["b"] = "2" }));
+        Assert.Null(MergeEngine.FindImage(single, single.Services[0], "shop", null));
+        Assert.Null(MergeEngine.FindImage(multi, multi.Services[0], "shop-api", new Dictionary<string, string> { ["x"] = "1" }));
     }
 }

@@ -1,0 +1,49 @@
+{
+  "organization": "acme",
+  "defaults": {
+    "region": "local",
+    "replicas": 1,
+    "cpu": "100m",
+    "memory": "128Mi",
+    "namespacePattern": "{app}-{env}",
+    "secretsStrategy": "opaque"
+  },
+  "runtime": {
+    "name": "kubernetes",
+    "config": {
+      "containerPort": 8080,
+      "servicePort": 80,
+      "rolloutTimeoutSeconds": 120
+    }
+  },
+  "provisioners": {
+    "postgres": "static",
+    "redis": "static",
+    "kafka.messaging": "static"
+  },
+  "provisionerConfigs": {
+    "static": {
+      "outputs": {
+        "postgres": {
+          "connectionString": "env:DESKRIBE_LOCAL_POSTGRES_CONNECTION",
+          "host": "postgres.shared.svc.cluster.local",
+          "port": "5432",
+          "database": "{app}"
+        },
+        "redis": {
+          "connectionString": "env:DESKRIBE_LOCAL_REDIS_CONNECTION",
+          "endpoint": "redis.shared.svc.cluster.local:6379",
+          "host": "redis.shared.svc.cluster.local",
+          "port": "6379"
+        },
+        "kafka.messaging": {
+          "bootstrapServers": "kafka.shared.svc.cluster.local:9092",
+          "endpoint": "kafka.shared.svc.cluster.local:9092"
+        }
+      }
+    }
+  },
+  "policies": {
+    "limits": { "maxReplicas": 5, "maxCpu": "1", "maxMemory": "1Gi" }
+  }
+}

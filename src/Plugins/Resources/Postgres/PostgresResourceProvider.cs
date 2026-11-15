@@ -8,59 +8,14 @@ public class PostgresResourceProvider : IResourceProvider
 {
     public string ResourceType => "postgres";
 
-    // Defaults; platform teams can replace them via provisionerConfigs.postgres
-    // (keys: validSizes, validVersions, defaultVersion, port).
+    // Defaults; platform teams replace them via platform.resources.postgres
+    // (falling back to provisionerConfigs.postgres): validSizes, validVersions, defaultVersion, port.
     private static readonly HashSet<string> DefaultValidSizes = ["xs", "s", "m", "l", "xl"];
     private static readonly HashSet<string> DefaultValidVersions = ["14", "15", "16", "17"];
     private const string DefaultVersion = "16";
     private const string DefaultPort = "5432";
 
-    private static ProviderConstraints GetConstraints(PlatformConfig platform) =>
-        platform.ProvisionerConfigs.TryGetValue("postgres", out var config)
-            ? ProviderConstraints.From(config)
-            : ProviderConstraints.Empty;
-
-    private sealed record ProviderConstraints(
-        HashSet<string>? ValidSizes,
-        HashSet<string>? ValidVersions,
-        string? DefaultVersion,
-        string? Port)
-    {
-        public static readonly ProviderConstraints Empty = new(null, null, null, null);
-
-        public static ProviderConstraints From(Dictionary<string, JsonElement> config) => new(
-            ReadStringSet(config, "validSizes"),
-            ReadStringSet(config, "validVersions"),
-            ReadString(config, "defaultVersion"),
-            ReadPort(config, "port"));
-
-        private static HashSet<string>? ReadStringSet(Dictionary<string, JsonElement> config, string key)
-        {
-            if (!config.TryGetValue(key, out var element) || element.ValueKind != JsonValueKind.Array)
-                return null;
-            return [.. element.EnumerateArray()
-                .Select(e => e.GetString())
-                .Where(s => s is not null)
-                .Select(s => s!)];
-        }
-
-        private static string? ReadString(Dictionary<string, JsonElement> config, string key) =>
-            config.TryGetValue(key, out var element) && element.ValueKind == JsonValueKind.String
-                ? element.GetString()
-                : null;
-
-        private static string? ReadPort(Dictionary<string, JsonElement> config, string key)
-        {
-            if (!config.TryGetValue(key, out var element))
-                return null;
-            return element.ValueKind switch
-            {
-                JsonValueKind.String => element.GetString(),
-                JsonValueKind.Number when element.TryGetInt32(out var port) => port.ToString(),
-                _ => null
-            };
-        }
-    }
+    private static readonly string[] AllowedProperties = ["version", "ha", "sku"];
 
     public ResourceSchema GetSchema() => new()
     {
@@ -72,22 +27,31 @@ public class PostgresResourceProvider : IResourceProvider
             new() { Name = "ha", ValueType = "bool", Description = "Enable high availability" },
             new() { Name = "sku", ValueType = "string", Description = "Azure SKU tier" }
         ],
-        ProvidedOutputs = ["connectionString", "host", "port"]
+        ProvidedOutputs = ["connectionString", "host", "port", "database"],
+        SensitiveOutputs = ["connectionString"]
     };
 
     public Task<ValidationResult> ValidateAsync(ResourceDescriptor resource, ValidationContext ctx, CancellationToken ct)
     {
         var errors = new List<string>();
-        var constraints = GetConstraints(ctx.Platform);
-        var validSizes = constraints.ValidSizes ?? DefaultValidSizes;
-        var validVersions = constraints.ValidVersions ?? DefaultValidVersions;
+        var validSizes = ProviderSupport.StringSet(ctx.Platform, "postgres", "validSizes") ?? DefaultValidSizes;
+        var validVersions = ProviderSupport.StringSet(ctx.Platform, "postgres", "validVersions") ?? DefaultValidVersions;
+
+        ProviderSupport.RejectUnknown(resource, AllowedProperties, "postgres", errors);
 
         if (resource.Size is not null && !validSizes.Contains(resource.Size))
             errors.Add($"Invalid Postgres size '{resource.Size}'. Valid sizes: {string.Join(", ", validSizes)}");
 
-        var version = resource.Properties.TryGetValue("version", out var v) ? v.GetString() : null;
-        if (version is not null && !validVersions.Contains(version))
-            errors.Add($"Invalid Postgres version '{version}'. Valid versions: {string.Join(", ", validVersions)}");
+        ProviderSupport.CheckBool(resource, "ha", errors);
+        ProviderSupport.CheckKind(resource, "sku", JsonValueKind.String, "a string", errors);
+
+        if (resource.Properties.TryGetValue("version", out var v))
+        {
+            if (v.ValueKind != JsonValueKind.String)
+                errors.Add($"Property 'version' on resource '{resource.Key}' must be a string");
+            else if (!validVersions.Contains(v.GetString()!))
+                errors.Add($"Invalid Postgres version '{v.GetString()}'. Valid versions: {string.Join(", ", validVersions)}");
+        }
 
         return Task.FromResult(errors.Count == 0
             ? ValidationResult.Valid()
@@ -96,31 +60,25 @@ public class PostgresResourceProvider : IResourceProvider
 
     public Task<ResourcePlanResult> PlanAsync(ResourceDescriptor resource, PlanContext ctx, CancellationToken ct)
     {
-        var constraints = GetConstraints(ctx.Platform);
-        var defaultVersion = constraints.DefaultVersion ?? DefaultVersion;
-        var size = resource.Size ?? "s";
-        var version = resource.Properties.TryGetValue("version", out var v) ? v.GetString() ?? defaultVersion : defaultVersion;
-        var ha = resource.Properties.TryGetValue("ha", out var h) ? h.GetBoolean() : ctx.EnvironmentConfig.Defaults?.Ha ?? false;
+        var defaultVersion = ProviderSupport.String(ctx.Platform, "postgres", "defaultVersion") ?? DefaultVersion;
+        var configuration = new Dictionary<string, object?>
+        {
+            ["version"] = ProviderSupport.ReadString(resource, "version") ?? defaultVersion,
+            ["size"] = resource.Size ?? "s",
+            ["ha"] = ProviderSupport.ReadBool(resource, "ha") ?? ctx.Defaults.Ha ?? false,
+            ["port"] = ProviderSupport.Port(ctx.Platform, "postgres") ?? DefaultPort,
+            ["appName"] = ctx.AppName,
+            ["environment"] = ctx.Environment,
+            ["region"] = ctx.Defaults.Region
+        };
+        if (ProviderSupport.ReadString(resource, "sku") is { } sku)
+            configuration["sku"] = sku;
 
         return Task.FromResult(new ResourcePlanResult
         {
+            ResourceKey = resource.Key,
             ResourceType = "postgres",
-            Action = "create",
-            PlannedOutputs = new Dictionary<string, string>
-            {
-                ["connectionString"] = $"<pending:{ctx.AppName}-postgres>",
-                ["host"] = $"<pending:{ctx.AppName}-postgres-host>",
-                ["port"] = constraints.Port ?? DefaultPort
-            },
-            Configuration = new Dictionary<string, object?>
-            {
-                ["version"] = version,
-                ["size"] = size,
-                ["ha"] = ha,
-                ["appName"] = ctx.AppName,
-                ["environment"] = ctx.Environment,
-                ["region"] = ctx.Platform.Defaults.Region
-            }
+            Configuration = configuration
         });
     }
 }

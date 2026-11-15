@@ -1,127 +1,48 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Deskribe.Sdk;
 using Deskribe.Sdk.Models;
 
 namespace Deskribe.Plugins.Provisioner.Pulumi;
 
-public class PulumiProvisioner : IProvisioner
+/// <summary>
+/// Runs the platform team's Pulumi program once per operation. Config: <c>projectDir</c> (required).
+/// Stack outputs are read as <c>&lt;resourceKey&gt;.&lt;output&gt;</c> or
+/// <c>&lt;resourceKey&gt;_&lt;output&gt;</c> (non-alphanumerics in the key replaced by <c>_</c>).
+/// </summary>
+public partial class PulumiProvisioner : IProvisioner
 {
-    // Used only when the plan carries no region (Platform.Defaults.Region).
-    private const string DefaultRegion = "westeurope";
+    private readonly IPulumiStackRunner _runner;
+
+    public PulumiProvisioner() : this(new AutomationApiStackRunner()) { }
+
+    internal PulumiProvisioner(IPulumiStackRunner runner) => _runner = runner;
 
     public string Name => "pulumi";
 
-    public async Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
+    public async Task<ProvisionResult> ApplyAsync(ProvisionContext ctx, CancellationToken ct = default)
     {
-        var pulumiProjectDir = GetProjectDir(plan.Platform);
-
-        if (string.IsNullOrEmpty(pulumiProjectDir))
-        {
-            return new ProvisionResult
-            {
-                Success = false,
-                Errors = ["projectDir must be configured in provisionerConfigs.pulumi to use the Pulumi provisioner"]
-            };
-        }
-
-        return await ApplyWithLocalProgramAsync(plan, pulumiProjectDir, ct);
-    }
-
-    private static async Task<ProvisionResult> ApplyWithLocalProgramAsync(
-        DeskribePlan plan, string projectDir, CancellationToken ct)
-    {
-        // Local Program mode: Use Pulumi Automation API with an existing Pulumi project
-        Console.WriteLine($"[Pulumi] Using Local Program mode with project: {projectDir}");
-
-        var stackName = $"{plan.AppName}-{plan.Environment}";
-        var outputs = new Dictionary<string, Dictionary<string, string>>();
+        if (GetProjectDir(ctx) is not { } projectDir)
+            return ProvisionResult.Failed(MissingProjectDir);
 
         try
         {
-            var workspace = await global::Pulumi.Automation.LocalWorkspace.CreateOrSelectStackAsync(
-                new global::Pulumi.Automation.LocalProgramArgs(stackName, projectDir),
-                ct);
-
-            // Set configuration from plan
-            await workspace.SetConfigAsync("appName",
-                new global::Pulumi.Automation.ConfigValue(plan.AppName), ct);
-            await workspace.SetConfigAsync("environment",
-                new global::Pulumi.Automation.ConfigValue(plan.Environment), ct);
-            await workspace.SetConfigAsync("region",
-                new global::Pulumi.Automation.ConfigValue(plan.Platform.Defaults.Region ?? DefaultRegion), ct);
-
-            // Set resource-specific config
-            foreach (var resourcePlan in plan.ResourcePlans)
-            {
-                foreach (var (key, value) in resourcePlan.Configuration)
-                {
-                    var configKey = $"{resourcePlan.ResourceType}:{key}";
-                    await workspace.SetConfigAsync(configKey,
-                        new global::Pulumi.Automation.ConfigValue(FormatValue(value)), ct);
-                }
-            }
-
-            Console.WriteLine($"[Pulumi] Running 'pulumi up' for stack {stackName}...");
-            var result = await workspace.UpAsync(
-                new global::Pulumi.Automation.UpOptions
-                {
-                    OnStandardOutput = Console.WriteLine
-                }, ct);
-
-            Console.WriteLine($"[Pulumi] Stack update complete: {result.Summary.Result}");
-
-            // Extract outputs from stack
-            var stackOutputs = result.Outputs;
-            foreach (var resourcePlan in plan.ResourcePlans)
-            {
-                var resourceOutputs = new Dictionary<string, string>();
-                foreach (var (key, output) in stackOutputs)
-                {
-                    if (key.StartsWith(resourcePlan.ResourceType, StringComparison.OrdinalIgnoreCase))
-                    {
-                        var outputKey = key[(resourcePlan.ResourceType.Length + 1)..];
-                        resourceOutputs[outputKey] = output.Value?.ToString() ?? "";
-                    }
-                }
-
-                // Fall back to planned outputs if no stack outputs match
-                if (resourceOutputs.Count == 0)
-                    resourceOutputs = resourcePlan.PlannedOutputs;
-
-                outputs[resourcePlan.ResourceType] = resourceOutputs;
-            }
-
-            return new ProvisionResult { Success = true, ResourceOutputs = outputs };
+            var stackOutputs = await _runner.UpAsync(projectDir, StackName(ctx), BuildConfig(ctx), ct);
+            return new ProvisionResult { Success = true, ResourceOutputs = MapOutputs(ctx.Resources, stackOutputs) };
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Pulumi] Stack update failed: {ex.Message}");
-            return new ProvisionResult
-            {
-                Success = false,
-                Errors = [$"Pulumi stack update failed: {ex.Message}"]
-            };
+            return ProvisionResult.Failed($"Pulumi stack update failed: {ex.Message}");
         }
     }
 
-    public Task<ArtifactResult> GenerateArtifactsAsync(DeskribePlan plan, string outputDir, CancellationToken ct)
+    public Task<ArtifactResult> GenerateArtifactsAsync(ProvisionContext ctx, string outputDir, CancellationToken ct = default)
     {
-        // Pulumi uses Automation API, so artifact generation produces Pulumi config
-        var stackConfig = new Dictionary<string, object>
-        {
-            ["appName"] = plan.AppName,
-            ["environment"] = plan.Environment,
-            ["region"] = plan.Platform.Defaults.Region ?? DefaultRegion
-        };
-
-        foreach (var rp in plan.ResourcePlans)
-        {
-            foreach (var (key, value) in rp.Configuration)
-                stackConfig[$"{rp.ResourceType}:{key}"] = value ?? "null";
-        }
-
-        var configJson = JsonSerializer.Serialize(stackConfig, new JsonSerializerOptions { WriteIndented = true });
-
+        var json = JsonSerializer.Serialize(BuildConfig(ctx), new JsonSerializerOptions { WriteIndented = true });
         return Task.FromResult(new ArtifactResult
         {
             Success = true,
@@ -129,43 +50,118 @@ public class PulumiProvisioner : IProvisioner
             [
                 new GeneratedFile
                 {
-                    Path = Path.Combine(outputDir, $"Pulumi.{plan.AppName}-{plan.Environment}.json"),
-                    Content = configJson,
+                    Path = Path.Combine(outputDir, $"Pulumi.{StackName(ctx)}.json"),
+                    Content = json,
                     Format = "json"
                 }
             ]
         });
     }
 
-    public async Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)
+    public async Task<ProvisionResult> DestroyAsync(ProvisionContext ctx, CancellationToken ct = default)
     {
-        var projectDir = GetProjectDir(platform);
-        if (string.IsNullOrEmpty(projectDir))
-            throw new InvalidOperationException("projectDir must be configured in provisionerConfigs.pulumi to use the Pulumi provisioner");
+        if (GetProjectDir(ctx) is not { } projectDir)
+            return ProvisionResult.Failed(MissingProjectDir);
 
-        var stackName = $"{appName}-{environment}";
-        var workspace = await global::Pulumi.Automation.LocalWorkspace.CreateOrSelectStackAsync(
-            new global::Pulumi.Automation.LocalProgramArgs(stackName, projectDir), ct);
-        await workspace.DestroyAsync(
-            new global::Pulumi.Automation.DestroyOptions { OnStandardOutput = Console.WriteLine }, ct);
-        await workspace.Workspace.RemoveStackAsync(stackName, ct);
-    }
-
-    private static string? GetProjectDir(PlatformConfig platform)
-    {
-        if (platform.ProvisionerConfigs.TryGetValue("pulumi", out var config)
-            && config.TryGetValue("projectDir", out var dir))
+        try
         {
-            return dir.GetString();
+            await _runner.DestroyAsync(projectDir, StackName(ctx), ct);
+            return new ProvisionResult { Success = true };
         }
-        return null;
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return ProvisionResult.Failed($"Pulumi stack destroy failed: {ex.Message}");
+        }
     }
 
-    private static string FormatValue(object? value)
+    private const string MissingProjectDir =
+        "projectDir must be configured in provisionerConfigs.pulumi to use the Pulumi provisioner";
+
+    private static string StackName(ProvisionContext ctx) => $"{ctx.AppName}-{ctx.Environment}";
+
+    private static string? GetProjectDir(ProvisionContext ctx) =>
+        ctx.Config.TryGetValue("projectDir", out var dir) && dir.ValueKind == JsonValueKind.String
+        && !string.IsNullOrWhiteSpace(dir.GetString())
+            ? dir.GetString()
+            : null;
+
+    internal static Dictionary<string, string> BuildConfig(ProvisionContext ctx)
     {
-        if (value is null) return "null";
-        if (value is JsonElement element) return element.ToString();
-        if (value is string s) return s;
-        return JsonSerializer.Serialize(value);
+        var config = new Dictionary<string, string>
+        {
+            ["appName"] = ctx.AppName,
+            ["environment"] = ctx.Environment
+        };
+        if (ctx.Defaults.Region is { } region) config["region"] = region;
+        if (ctx.Team is { } team) config["team"] = team;
+
+        foreach (var resource in ctx.Resources)
+        {
+            foreach (var (key, value) in resource.Configuration)
+                config[$"{resource.ResourceKey}:{key}"] = FormatValue(value);
+        }
+        return config;
     }
+
+    internal static Dictionary<string, Dictionary<string, string>> MapOutputs(
+        IReadOnlyList<ResourcePlanResult> resources, IReadOnlyDictionary<string, object?> stackOutputs)
+    {
+        var result = new Dictionary<string, Dictionary<string, string>>();
+
+        foreach (var (name, raw) in stackOutputs)
+        {
+            var value = ToText(raw);
+            if (value is null) continue;
+
+            // Longest matching key prefix wins so keys that are prefixes of each other do not collide.
+            (ResourcePlanResult Resource, string Output)? best = null;
+            var bestLength = -1;
+            foreach (var resource in resources)
+            {
+                foreach (var prefix in new[] { resource.ResourceKey + ".", Sanitize(resource.ResourceKey) + "_" })
+                {
+                    if (name.Length > prefix.Length && name.StartsWith(prefix, StringComparison.Ordinal)
+                        && prefix.Length > bestLength)
+                    {
+                        best = (resource, name[prefix.Length..]);
+                        bestLength = prefix.Length;
+                    }
+                }
+            }
+
+            if (best is not { } match) continue;
+            if (!result.TryGetValue(match.Resource.ResourceKey, out var outputs))
+                result[match.Resource.ResourceKey] = outputs = new Dictionary<string, string>();
+            outputs[match.Output] = value;
+        }
+        return result;
+    }
+
+    private static string Sanitize(string key) => NonAlphanumeric().Replace(key, "_");
+
+    [GeneratedRegex("[^A-Za-z0-9]")]
+    private static partial Regex NonAlphanumeric();
+
+    private static string? ToText(object? value) => value switch
+    {
+        null => null,
+        string s => s,
+        JsonElement { ValueKind: JsonValueKind.String } e => e.GetString(),
+        JsonElement { ValueKind: JsonValueKind.Null } => null,
+        bool b => b ? "true" : "false",
+        IFormattable f => f.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+        _ => JsonSerializer.Serialize(value)
+    };
+
+    private static string FormatValue(object? value) => value switch
+    {
+        null => "null",
+        string s => s,
+        JsonElement { ValueKind: JsonValueKind.String } e => e.GetString()!,
+        _ => JsonSerializer.Serialize(value)
+    };
 }

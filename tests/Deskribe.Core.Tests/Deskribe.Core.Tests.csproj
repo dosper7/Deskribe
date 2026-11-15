@@ -9,6 +9,8 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.3" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
@@ -21,9 +23,6 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\Deskribe.Core\Deskribe.Core.csproj" />
     <ProjectReference Include="..\..\src\Deskribe.Sdk\Deskribe.Sdk.csproj" />
-    <ProjectReference Include="..\..\src\Plugins\Resources\Postgres\Deskribe.Plugins.Resources.Postgres.csproj" />
-    <ProjectReference Include="..\..\src\Plugins\Resources\Redis\Deskribe.Plugins.Resources.Redis.csproj" />
-    <ProjectReference Include="..\..\src\Plugins\Resources\Kafka\Deskribe.Plugins.Resources.Kafka.csproj" />
   </ItemGroup>
 
 </Project>

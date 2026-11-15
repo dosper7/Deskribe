@@ -3,7 +3,6 @@ using Deskribe.Core.Config;
 using Deskribe.Core.Engine;
 using Deskribe.Core.Merging;
 using Deskribe.Core.Plugins;
-using Deskribe.Core.Resolution;
 using Deskribe.Core.Validation;
 using Microsoft.Extensions.DependencyInjection;
 
@@ -28,8 +27,7 @@ public static class DeskribeServiceExtensions
         services.AddSingleton<EngineDefaults>();
         services.AddSingleton<ConfigLoader>();
         services.AddSingleton<MergeEngine>();
-        services.AddSingleton<ResourceReferenceResolver>();
-        services.AddSingleton<PolicyValidator>();
+        services.AddSingleton<ManifestValidator>();
         services.AddSingleton(sp =>
         {
             var registry = new PluginRegistry(

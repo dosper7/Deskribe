@@ -14,7 +14,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Deskribe.Core\Deskribe.Core.csproj" />
     <ProjectReference Include="..\Deskribe.Sdk\Deskribe.Sdk.csproj" />
   </ItemGroup>
 

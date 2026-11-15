@@ -8,6 +8,9 @@ public class KafkaResourceProvider : IResourceProvider
 {
     public string ResourceType => "kafka.messaging";
 
+    private static readonly string[] AllowedProperties = ["topics"];
+    private static readonly string[] AllowedTopicProperties = ["name", "partitions", "retentionHours", "owners", "consumers"];
+
     public ResourceSchema GetSchema() => new()
     {
         ResourceType = "kafka.messaging",
@@ -16,30 +19,31 @@ public class KafkaResourceProvider : IResourceProvider
         [
             new() { Name = "topics", ValueType = "array", Required = true, Description = "List of Kafka topics" }
         ],
-        ProvidedOutputs = ["endpoint", "bootstrapServers"]
+        ProvidedOutputs = ["bootstrapServers", "endpoint"],
+        SensitiveOutputs = []
     };
 
     public Task<ValidationResult> ValidateAsync(ResourceDescriptor resource, ValidationContext ctx, CancellationToken ct)
     {
         var errors = new List<string>();
-        var topics = ExtractTopics(resource);
+        ProviderSupport.RejectUnknown(resource, AllowedProperties, "kafka.messaging", errors);
 
-        if (topics.Count == 0)
-            errors.Add("Kafka messaging resource must have at least one topic");
-
-        foreach (var topic in topics)
+        if (!resource.Properties.TryGetValue("topics", out var topics))
         {
-            if (string.IsNullOrWhiteSpace(topic.Name))
-                errors.Add("Kafka topic name is required");
+            errors.Add("Kafka messaging resource must have at least one topic");
+        }
+        else if (topics.ValueKind != JsonValueKind.Array)
+        {
+            errors.Add("Property 'topics' must be an array of topic objects");
+        }
+        else
+        {
+            var items = topics.EnumerateArray().ToList();
+            if (items.Count == 0)
+                errors.Add("Kafka messaging resource must have at least one topic");
 
-            if (topic.Partitions is < 1)
-                errors.Add($"Topic '{topic.Name}' must have at least 1 partition");
-
-            if (topic.RetentionHours is < 1)
-                errors.Add($"Topic '{topic.Name}' must have retention of at least 1 hour");
-
-            if (topic.Owners.Count == 0)
-                errors.Add($"Topic '{topic.Name}' must have at least one owner");
+            for (var i = 0; i < items.Count; i++)
+                ValidateTopic(items[i], i, errors);
         }
 
         return Task.FromResult(errors.Count == 0
@@ -47,11 +51,69 @@ public class KafkaResourceProvider : IResourceProvider
             : ValidationResult.Invalid([.. errors]));
     }
 
+    private static void ValidateTopic(JsonElement item, int index, List<string> errors)
+    {
+        if (item.ValueKind != JsonValueKind.Object)
+        {
+            errors.Add($"Topic at index {index} must be an object");
+            return;
+        }
+
+        foreach (var prop in item.EnumerateObject())
+        {
+            if (!AllowedTopicProperties.Contains(prop.Name))
+                errors.Add($"Unknown topic property '{prop.Name}' at index {index}. Allowed: {string.Join(", ", AllowedTopicProperties)}");
+        }
+
+        var name = "";
+        if (item.TryGetProperty("name", out var n))
+        {
+            if (n.ValueKind == JsonValueKind.String) name = n.GetString() ?? "";
+            else errors.Add($"Topic name at index {index} must be a string");
+        }
+        if (string.IsNullOrWhiteSpace(name) && !(item.TryGetProperty("name", out var n2) && n2.ValueKind != JsonValueKind.String))
+            errors.Add("Kafka topic name is required");
+
+        CheckPositiveInt(item, "partitions", name, "must have at least 1 partition", errors);
+        CheckPositiveInt(item, "retentionHours", name, "must have retention of at least 1 hour", errors);
+
+        var owners = CheckStringArray(item, "owners", name, errors);
+        CheckStringArray(item, "consumers", name, errors);
+        if (owners == 0 && !(item.TryGetProperty("owners", out var o) && o.ValueKind != JsonValueKind.Array))
+            errors.Add($"Topic '{name}' must have at least one owner");
+    }
+
+    private static void CheckPositiveInt(JsonElement item, string prop, string topic, string message, List<string> errors)
+    {
+        if (!item.TryGetProperty(prop, out var v)) return;
+        if (v.ValueKind != JsonValueKind.Number || !v.TryGetInt32(out var value))
+            errors.Add($"Topic '{topic}' property '{prop}' must be an integer");
+        else if (value < 1)
+            errors.Add($"Topic '{topic}' {message}");
+    }
+
+    private static int CheckStringArray(JsonElement item, string prop, string topic, List<string> errors)
+    {
+        if (!item.TryGetProperty(prop, out var v)) return 0;
+        if (v.ValueKind != JsonValueKind.Array)
+        {
+            errors.Add($"Topic '{topic}' property '{prop}' must be an array of strings");
+            return 0;
+        }
+        var count = 0;
+        foreach (var e in v.EnumerateArray())
+        {
+            if (e.ValueKind != JsonValueKind.String)
+                errors.Add($"Topic '{topic}' property '{prop}' must contain only strings");
+            else
+                count++;
+        }
+        return count;
+    }
+
     public Task<ResourcePlanResult> PlanAsync(ResourceDescriptor resource, PlanContext ctx, CancellationToken ct)
     {
-        var topics = ExtractTopics(resource);
-
-        var topicConfigs = topics.Select(t => new Dictionary<string, object?>
+        var topicConfigs = ExtractTopics(resource).Select(t => new Dictionary<string, object?>
         {
             ["name"] = t.Name,
             ["partitions"] = t.Partitions ?? 3,
@@ -62,18 +124,13 @@ public class KafkaResourceProvider : IResourceProvider
 
         return Task.FromResult(new ResourcePlanResult
         {
+            ResourceKey = resource.Key,
             ResourceType = "kafka.messaging",
-            Action = "create",
-            PlannedOutputs = new Dictionary<string, string>
-            {
-                ["endpoint"] = $"<pending:{ctx.AppName}-kafka>",
-                ["bootstrapServers"] = $"<pending:{ctx.AppName}-kafka-bootstrap>"
-            },
             Configuration = new Dictionary<string, object?>
             {
                 ["appName"] = ctx.AppName,
                 ["environment"] = ctx.Environment,
-                ["region"] = ctx.Platform.Defaults.Region,
+                ["region"] = ctx.Defaults.Region,
                 ["topics"] = topicConfigs
             }
         });
@@ -81,28 +138,37 @@ public class KafkaResourceProvider : IResourceProvider
 
     private static List<KafkaTopicConfig> ExtractTopics(ResourceDescriptor resource)
     {
-        if (!resource.Properties.TryGetValue("topics", out var topicsElement))
+        if (!resource.Properties.TryGetValue("topics", out var topicsElement)
+            || topicsElement.ValueKind != JsonValueKind.Array)
             return [];
 
         var topics = new List<KafkaTopicConfig>();
         foreach (var item in topicsElement.EnumerateArray())
         {
+            if (item.ValueKind != JsonValueKind.Object) continue;
             topics.Add(new KafkaTopicConfig
             {
-                Name = item.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
-                Partitions = item.TryGetProperty("partitions", out var p) ? p.GetInt32() : null,
-                RetentionHours = item.TryGetProperty("retentionHours", out var r) ? r.GetInt32() : null,
-                Owners = item.TryGetProperty("owners", out var o)
-                    ? o.EnumerateArray().Select(e => e.GetString() ?? "").ToList()
-                    : [],
-                Consumers = item.TryGetProperty("consumers", out var c)
-                    ? c.EnumerateArray().Select(e => e.GetString() ?? "").ToList()
-                    : []
+                Name = Str(item, "name") ?? "",
+                Partitions = Int(item, "partitions"),
+                RetentionHours = Int(item, "retentionHours"),
+                Owners = Strings(item, "owners"),
+                Consumers = Strings(item, "consumers")
             });
         }
 
         return topics;
     }
+
+    private static string? Str(JsonElement item, string prop) =>
+        item.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private static int? Int(JsonElement item, string prop) =>
+        item.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt32(out var i) ? i : null;
+
+    private static List<string> Strings(JsonElement item, string prop) =>
+        item.TryGetProperty(prop, out var v) && v.ValueKind == JsonValueKind.Array
+            ? [.. v.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString()!)]
+            : [];
 }
 
 internal sealed record KafkaTopicConfig

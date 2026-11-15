@@ -17,16 +17,22 @@ var manifestPath = configuredPath is not null
     ? Path.GetFullPath(Path.Combine(builder.AppHostDirectory, configuredPath))
     : Path.Combine(builder.AppHostDirectory, "..", "..", "examples", "payments-api", "deskribe.json");
 
-var resources = builder.AddDeskribeManifest(manifestPath);
+// Developer tools (PgAdmin, RedisInsight, Kafka UI) and persistent containers default to on.
+var resources = builder.AddDeskribeManifest(manifestPath, options: new DeskribeAspireOptions
+{
+    DeveloperTools = true,
+    PersistentContainers = true
+});
 
-// Payments API — the sample application using Postgres, Redis, and Kafka
+// Payments API — the sample application using Postgres, Redis, and Kafka.
+// The manifest's service `env` map is applied as-is (@resource(...) refs resolve to the local containers).
+// Pass a serviceName to WithDeskribeResources if the manifest declares several services.
 var paymentsApi = builder.AddProject<Projects.PaymentsApi>("payments-api")
     .WithDeskribeResources(resources)
     .WithExternalHttpEndpoints();
 
-// Deskribe Web UI — dashboard showing what's running
+// Deskribe Web UI — dashboard showing what's running (consumes no manifest resources)
 var web = builder.AddProject<Projects.Deskribe_Web>("deskribe-web")
-    .WithDeskribeResources(resources)
     .WithExternalHttpEndpoints();
 
 builder.Build().Run();

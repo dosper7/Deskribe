@@ -2,8 +2,8 @@ namespace Deskribe.Sdk.Models;
 
 public sealed record ResourcePlanResult
 {
+    /// <summary>The resource's key within the app (see <see cref="ResourceDescriptor.Key"/>).</summary>
+    public required string ResourceKey { get; init; }
     public required string ResourceType { get; init; }
-    public required string Action { get; init; } // "create", "update", "no-change"
-    public Dictionary<string, string> PlannedOutputs { get; init; } = new();
     public Dictionary<string, object?> Configuration { get; init; } = new();
 }

@@ -1,9 +1,9 @@
 @page "/plan/{AppName}/{Environment}"
+@using Deskribe.Core
 @using Deskribe.Web.Services
 @using Deskribe.Sdk.Models
 @using System.Text.Json
 @inject DeskribeUiService UiService
-@inject NavigationManager Nav
 @rendermode InteractiveServer
 
 <PageTitle>Plan: @AppName (@Environment) - Deskribe</PageTitle>
@@ -21,7 +21,7 @@
 <Deskribe.Web.Components.Shared.ConfirmDialog
     IsVisible="@showDestroyConfirm"
     Title="Confirm Destroy"
-    Message='@($"This will DESTROY all resources for {AppName} in {Environment}. This cannot be undone. Continue?")'
+    Message='@($"This will DESTROY the workloads and infrastructure of {AppName} in {Environment}. This cannot be undone. Continue?")'
     ConfirmText="Destroy"
     ButtonClass="btn-danger"
     IsProcessing="@isDestroying"
@@ -53,39 +53,55 @@
     </div>
     <div style="display: flex; gap: 8px; align-items: flex-end;">
         <div style="display: flex; flex-direction: column; gap: 4px;">
-            <label style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 600;">Container Image</label>
-            <input type="text" @bind="containerImage" placeholder="nginx:latest"
-                   style="background: var(--card-bg); border: 1px solid var(--border-color); color: var(--text-primary); padding: 6px 10px; border-radius: 6px; font-size: 13px; font-family: monospace; width: 280px;" />
+            <label style="font-size: 11px; color: var(--text-muted); text-transform: uppercase; font-weight: 600;">Images (name=image per line)</label>
+            <textarea @bind="imagesText" rows="2" placeholder="registry/app:tag"
+                      style="background: var(--card-bg); border: 1px solid var(--border-color); color: var(--text-primary); padding: 6px 10px; border-radius: 6px; font-size: 13px; font-family: monospace; width: 280px;"></textarea>
         </div>
         <button class="btn btn-primary" @onclick="GeneratePlan" disabled="@isLoading">
             @if (isLoading) { <span class="spinner"></span> } Plan
         </button>
-        <button class="btn btn-success" @onclick="() => showApplyConfirm = true" disabled="@(plan == null || isApplying)">
+        <button class="btn btn-success" @onclick="() => showApplyConfirm = true" disabled="@(!UiService.MutationsEnabled || plan == null || isApplying)">
             @if (isApplying) { <span class="spinner"></span> } Apply
         </button>
-        <button class="btn btn-primary" @onclick="GenerateArtifacts" disabled="@(plan == null || isGenerating)" style="background: #6366f1; border-color: #6366f1;">
-            @if (isGenerating) { <span class="spinner"></span> } Generate
-        </button>
-        <button class="btn btn-danger" @onclick="() => showDestroyConfirm = true" disabled="@isDestroying">
+        <button class="btn btn-danger" @onclick="() => showDestroyConfirm = true" disabled="@(!UiService.MutationsEnabled || isDestroying)">
             @if (isDestroying) { <span class="spinner"></span> } Destroy
         </button>
     </div>
 </div>
 
+@if (!UiService.MutationsEnabled)
+{
+    <div style="background: #e0f2fe; border: 1px solid #38bdf8; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; color: #075985;">
+        <strong>Read-only.</strong> @DeskribeUiService.ReadOnlyReason
+    </div>
+}
+
 @if (errorMessage != null)
 {
     <div class="toast error" style="margin-bottom: 16px;">@errorMessage</div>
+}
+@if (validationErrors.Count > 0)
+{
+    <div class="toast error" style="margin-bottom: 16px;">
+        <strong style="display: block; margin-bottom: 4px;">Validation failed</strong>
+        <ul style="margin: 0; padding-left: 20px;">
+            @foreach (var error in validationErrors)
+            {
+                <li>@error</li>
+            }
+        </ul>
+    </div>
 }
 @if (successMessage != null)
 {
     <div class="toast success" style="margin-bottom: 16px;">@successMessage</div>
 }
-@if (plan?.Warnings.Count > 0)
+@if (warnings.Count > 0)
 {
     <div style="background: #fef3c7; border: 1px solid #f59e0b; border-radius: 8px; padding: 12px 16px; margin-bottom: 16px; color: #92400e;">
         <strong style="display: block; margin-bottom: 4px;">Warnings</strong>
         <ul style="margin: 0; padding-left: 20px;">
-            @foreach (var warning in plan.Warnings)
+            @foreach (var warning in warnings)
             {
                 <li>@warning</li>
             }
@@ -93,11 +109,53 @@
     </div>
 }
 
+<div class="card" style="margin-bottom: 16px;">
+    <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+        <h3>Deployment status</h3>
+        <button class="btn btn-outline" style="font-size: 12px;" @onclick="LoadStatus" disabled="@isStatusLoading">
+            @if (isStatusLoading) { <span class="spinner"></span> } Refresh
+        </button>
+    </div>
+    <div class="card-body">
+        @if (statusResult == null)
+        {
+            <span class="text-muted">Checking...</span>
+        }
+        else if (statusResult.Error != null)
+        {
+            <span class="text-muted">Status unavailable: @statusResult.Error</span>
+        }
+        else if (statusResult.Status is not { Exists: true } status || status.Workloads.Count == 0)
+        {
+            <span class="text-muted">Nothing is deployed (namespace @statusResult.Status?.Namespace).</span>
+        }
+        else
+        {
+            <div class="text-muted" style="margin-bottom: 8px;">Namespace <code>@status.Namespace</code></div>
+            <table class="resource-table">
+                <thead><tr><th>Workload</th><th>Image</th><th>Ready</th></tr></thead>
+                <tbody>
+                    @foreach (var w in status.Workloads)
+                    {
+                        <tr>
+                            <td style="font-weight: 600;">@w.Name</td>
+                            <td style="font-family: monospace; font-size: 12px;">@(w.Image ?? "—")</td>
+                            <td>
+                                <span class="badge @(w.Ready ? "badge-healthy" : "badge-error")">@w.ReadyReplicas/@w.DesiredReplicas</span>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </div>
+</div>
+
 <div class="tab-nav">
     <button class="@(activeTab == "plan" ? "active" : "")" @onclick='() => activeTab = "plan"'>Plan</button>
     <button class="@(activeTab == "resources" ? "active" : "")" @onclick='() => activeTab = "resources"'>Resources</button>
-    <button class="@(activeTab == "workload" ? "active" : "")" @onclick='() => activeTab = "workload"'>Workload</button>
-    <button class="@(activeTab == "yaml" ? "active" : "")" @onclick='() => activeTab = "yaml"'>YAML Preview</button>
+    <button class="@(activeTab == "workload" ? "active" : "")" @onclick='() => activeTab = "workload"'>Workloads</button>
+    <button class="@(activeTab == "bindings" ? "active" : "")" @onclick='() => activeTab = "bindings"'>Bindings</button>
 </div>
 
 @if (plan == null && !isLoading)
@@ -124,8 +182,8 @@ else if (plan != null)
             {
                 <div class="plan-resource">
                     <div class="plan-resource-header">
-                        <span class="badge badge-create">@rp.Action.ToUpperInvariant()</span>
-                        <span style="font-weight: 600; font-size: 15px;">@rp.ResourceType</span>
+                        <span class="badge badge-resource">@rp.ResourceType</span>
+                        <span style="font-weight: 600; font-size: 15px;">@rp.ResourceKey</span>
                     </div>
                     <div class="plan-resource-body">
                         @foreach (var (key, value) in rp.Configuration)
@@ -133,19 +191,6 @@ else if (plan != null)
                             <div class="plan-config-item">
                                 <span class="plan-config-key">@key</span>
                                 <span class="plan-config-value">@FormatValue(value)</span>
-                            </div>
-                        }
-                        @if (rp.PlannedOutputs.Count > 0)
-                        {
-                            <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-color);">
-                                <div style="font-size: 11px; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; font-weight: 600;">Outputs</div>
-                                @foreach (var (key, value) in rp.PlannedOutputs)
-                                {
-                                    <div class="plan-config-item">
-                                        <span class="plan-config-key">@key</span>
-                                        <span class="plan-config-value">@value</span>
-                                    </div>
-                                }
                             </div>
                         }
                     </div>
@@ -161,22 +206,18 @@ else if (plan != null)
                 <table class="resource-table">
                     <thead>
                         <tr>
+                            <th>Key</th>
                             <th>Type</th>
-                            <th>Action</th>
-                            <th>Backend</th>
-                            <th>Namespace</th>
-                            <th>Helm Chart</th>
+                            <th>Provisioner</th>
                         </tr>
                     </thead>
                     <tbody>
                         @foreach (var rp in plan.ResourcePlans)
                         {
                             <tr>
+                                <td style="font-weight: 600;">@rp.ResourceKey</td>
                                 <td><span class="badge badge-resource">@rp.ResourceType</span></td>
-                                <td><span class="badge badge-create">@rp.Action</span></td>
                                 <td>@(plan.Platform.Provisioners.GetValueOrDefault(rp.ResourceType, "—"))</td>
-                                <td style="font-family: monospace;">@(rp.Configuration.GetValueOrDefault("namespace")?.ToString() ?? "—")</td>
-                                <td style="font-family: monospace; font-size: 12px;">@(rp.Configuration.GetValueOrDefault("helmChart")?.ToString() ?? "—")</td>
                             </tr>
                         }
                     </tbody>
@@ -185,55 +226,84 @@ else if (plan != null)
         </div>
     }
 
-    @if (activeTab == "workload" && plan.Workload != null)
+    @if (activeTab == "workload")
     {
-        <div class="workload-grid">
-            <div class="workload-item">
-                <div class="label">Namespace</div>
-                <div class="value">@plan.Workload.Namespace</div>
-            </div>
-            <div class="workload-item">
-                <div class="label">Image</div>
-                <div class="value" style="font-size: 12px;">@(plan.Workload.Image ?? "not set")</div>
-            </div>
-            <div class="workload-item">
-                <div class="label">Replicas</div>
-                <div class="value">@plan.Workload.Replicas</div>
-            </div>
-            <div class="workload-item">
-                <div class="label">CPU</div>
-                <div class="value">@plan.Workload.Cpu</div>
-            </div>
-            <div class="workload-item">
-                <div class="label">Memory</div>
-                <div class="value">@plan.Workload.Memory</div>
-            </div>
-        </div>
-
-        @if (plan.Workload.EnvironmentVariables.Count > 0)
+        <div class="text-muted" style="margin-bottom: 12px;">Namespace <code>@plan.Namespace</code></div>
+        @foreach (var workload in plan.Workloads)
         {
-            <div class="card mt-4">
-                <div class="card-header">
-                    <h3>Environment Variables</h3>
+            <h3 style="font-size: 16px; margin: 16px 0 8px;">@workload.Name</h3>
+            <div class="workload-grid">
+                <div class="workload-item">
+                    <div class="label">Image</div>
+                    <div class="value" style="font-size: 12px;">@(workload.Image ?? "not set")</div>
                 </div>
-                <div class="card-body">
-                    <ul class="env-var-list">
-                        @foreach (var (key, value) in plan.Workload.EnvironmentVariables)
-                        {
-                            <li>
-                                <span class="env-var-key">@key</span>
-                                <span class="env-var-value">@value</span>
-                            </li>
-                        }
-                    </ul>
+                <div class="workload-item">
+                    <div class="label">Replicas</div>
+                    <div class="value">@workload.Replicas</div>
+                </div>
+                <div class="workload-item">
+                    <div class="label">CPU</div>
+                    <div class="value">@workload.Cpu</div>
+                </div>
+                <div class="workload-item">
+                    <div class="label">Memory</div>
+                    <div class="value">@workload.Memory</div>
+                </div>
+                <div class="workload-item">
+                    <div class="label">Secrets</div>
+                    <div class="value">@workload.SecretsStrategy</div>
                 </div>
             </div>
+
+            @if (workload.EnvironmentVariables.Count > 0)
+            {
+                <div class="card mt-4">
+                    <div class="card-header">
+                        <h3>Environment Variables</h3>
+                    </div>
+                    <div class="card-body">
+                        <ul class="env-var-list">
+                            @foreach (var (key, value) in workload.EnvironmentVariables)
+                            {
+                                <li>
+                                    <span class="env-var-key">@key</span>
+                                    <span class="env-var-value">@(workload.SecretKeys.Contains(key) ? "(secret)" : value)</span>
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                </div>
+            }
         }
     }
 
-    @if (activeTab == "yaml" && yamlPreview != null)
+    @if (activeTab == "bindings")
     {
-        <div class="yaml-viewer">@yamlPreview</div>
+        <div class="card">
+            <div class="card-body" style="padding: 0;">
+                <table class="resource-table">
+                    <thead>
+                        <tr>
+                            <th>Workload</th>
+                            <th>Env var</th>
+                            <th>Resource</th>
+                            <th>Output</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var b in plan.Bindings)
+                        {
+                            <tr>
+                                <td>@b.Workload</td>
+                                <td style="font-family: monospace;">@b.EnvVar</td>
+                                <td>@b.ResourceKey <span class="badge badge-resource">@b.ResourceType</span></td>
+                                <td>@b.Output @if (b.Sensitive) { <span class="badge badge-warning">sensitive</span> }</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        </div>
     }
 }
 
@@ -243,44 +313,68 @@ else if (plan != null)
 
     private DeskribeUiService.AppInfo? appInfo;
     private DeskribePlan? plan;
-    private string? yamlPreview;
+    private StatusResult? statusResult;
     private string? errorMessage;
     private string? successMessage;
+    private List<string> validationErrors = [];
+    private List<string> warnings = [];
     private bool isLoading;
     private bool isApplying;
     private bool isDestroying;
-    private bool isGenerating;
+    private bool isStatusLoading;
     private string activeTab = "plan";
-    private string containerImage = "nginx:latest";
+    private string imagesText = "";
     private bool showApplyConfirm;
     private bool showDestroyConfirm;
 
-    protected override void OnInitialized()
+    protected override async Task OnParametersSetAsync()
     {
         appInfo = UiService.GetApplications().FirstOrDefault(a => a.Name == AppName);
+        plan = null;
+        errorMessage = successMessage = null;
+        validationErrors = [];
+        warnings = [];
+        await LoadStatus();
+    }
+
+    private void ClearMessages()
+    {
+        errorMessage = successMessage = null;
+        validationErrors = [];
+    }
+
+    private async Task LoadStatus()
+    {
+        if (appInfo == null) return;
+        isStatusLoading = true;
+        try
+        {
+            statusResult = await UiService.GetStatusAsync(AppName, Environment);
+        }
+        finally
+        {
+            isStatusLoading = false;
+        }
     }
 
     private async Task GeneratePlan()
     {
         isLoading = true;
-        errorMessage = null;
-        successMessage = null;
+        ClearMessages();
+        plan = null;
 
         try
         {
-            plan = await UiService.PlanAsync(AppName, Environment, containerImage);
-
-            // Generate YAML preview
-            var k8sPlugin = new Deskribe.Plugins.Runtime.Kubernetes.KubernetesRuntimePlugin();
-            if (plan.Workload != null)
-            {
-                var artifact = await k8sPlugin.RenderAsync(plan.Workload, CancellationToken.None);
-                yamlPreview = artifact.Yaml;
-            }
-
+            plan = await UiService.PlanAsync(AppName, Environment, DeskribeUiService.ParseImages(imagesText));
+            warnings = plan.Warnings;
             successMessage = "Plan generated successfully";
         }
-        catch (Exception ex)
+        catch (DeskribeValidationException ex)
+        {
+            validationErrors = ex.Result.Errors;
+            warnings = ex.Result.Warnings;
+        }
+        catch (Exception ex) when (ex is DeskribeException or AppNotFoundException)
         {
             errorMessage = ex.Message;
         }
@@ -290,72 +384,51 @@ else if (plan != null)
         }
     }
 
-    private async Task GenerateArtifacts()
-    {
-        if (plan == null) return;
-        isGenerating = true;
-        errorMessage = null;
-
-        try
-        {
-            var outputDir = Path.Combine(Path.GetTempPath(), "deskribe-output", AppName, Environment);
-            var files = await UiService.GenerateAsync(AppName, Environment, outputDir, containerImage, "k8s-only");
-            successMessage = $"Generated {files.Count} artifact(s) to {outputDir}";
-        }
-        catch (Exception ex)
-        {
-            errorMessage = ex.Message;
-        }
-        finally
-        {
-            isGenerating = false;
-        }
-    }
-
     private async Task DoApply()
     {
         if (plan == null) return;
         isApplying = true;
-        errorMessage = null;
+        ClearMessages();
 
         try
         {
-            await UiService.ApplyAsync(plan);
-            successMessage = $"Successfully applied {AppName} to {Environment}!";
-            showApplyConfirm = false;
+            var result = await UiService.ApplyAsync(plan);
+            successMessage = $"Applied {AppName} to {Environment} (namespace {result.Namespace}): " +
+                             $"{result.Applied.Count} applied, {result.Pruned.Count} pruned.";
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is DeskribeException or MutationsDisabledException)
         {
             errorMessage = ex.Message;
-            showApplyConfirm = false;
         }
         finally
         {
+            showApplyConfirm = false;
             isApplying = false;
         }
+        await LoadStatus();
     }
 
     private async Task DoDestroy()
     {
         isDestroying = true;
-        errorMessage = null;
+        ClearMessages();
 
         try
         {
             await UiService.DestroyAsync(AppName, Environment);
-            successMessage = $"Successfully destroyed {AppName} in {Environment}!";
+            successMessage = $"Destroyed {AppName} in {Environment}.";
             plan = null;
-            showDestroyConfirm = false;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is DeskribeException or MutationsDisabledException or AppNotFoundException)
         {
             errorMessage = ex.Message;
-            showDestroyConfirm = false;
         }
         finally
         {
+            showDestroyConfirm = false;
             isDestroying = false;
         }
+        await LoadStatus();
     }
 
     private static string GetStatusBadgeClass(AppStatus status) => status switch
