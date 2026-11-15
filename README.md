@@ -496,6 +496,7 @@ kubectl apply -k output/payments-api/overlays/prod
 - [Platform Teams](docs/platform-teams.md)
 - [Plugin Development](docs/plugin-development.md)
 - [System Design](docs/system-design.md)
+- [Design Review](docs/design-review.md) — 2026-11 review: findings, fixes, and recommendations
 
 ---
 
