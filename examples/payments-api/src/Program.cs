@@ -6,29 +6,41 @@ using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// --- Postgres (via EF Core) ---
-// Reads from env var: ConnectionStrings__Postgres (set by Deskribe @resource(postgres).connectionString)
-var pgConn = builder.Configuration.GetConnectionString("Postgres")
-    ?? builder.Configuration["ConnectionStrings__Postgres"]
-    ?? "Host=localhost;Database=payments;Username=postgres;Password=postgres";
+// Each setting is bound by deskribe.json (`env`) and arrives as an environment variable,
+// e.g. ConnectionStrings__Postgres -> configuration key ConnectionStrings:Postgres.
+// Only in Development a missing value falls back to a localhost default (running the API
+// on its own, without the AppHost). Elsewhere a missing value is a broken binding and
+// fails startup instead of silently pointing at localhost.
+string Setting(string key, string devFallback)
+{
+    var value = builder.Configuration[key];
+    if (!string.IsNullOrWhiteSpace(value))
+        return value;
+
+    if (builder.Environment.IsDevelopment())
+    {
+        Console.WriteLine($"warn: configuration '{key}' is not set; using development default '{devFallback}'.");
+        return devFallback;
+    }
+
+    throw new InvalidOperationException(
+        $"Configuration '{key}' is not set. Check that the env binding for it in deskribe.json is resolved.");
+}
+
+// --- Postgres (via EF Core) --- @resource(postgres).connectionString
+var pgConn = Setting("ConnectionStrings:Postgres", "Host=localhost;Database=payments;Username=postgres");
 
 builder.Services.AddDbContext<PaymentsDbContext>(options =>
     options.UseNpgsql(pgConn));
 
-// --- Redis ---
-// Reads from env var: Redis__Endpoint (set by Deskribe @resource(redis).endpoint)
-var redisEndpoint = builder.Configuration["Redis__Endpoint"]
-    ?? builder.Configuration["Redis:Endpoint"]
-    ?? "localhost:6379";
+// --- Redis --- @resource(redis).endpoint
+var redisEndpoint = Setting("Redis:Endpoint", "localhost:6379");
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     ConnectionMultiplexer.Connect(redisEndpoint));
 
-// --- Kafka Producer ---
-// Reads from env var: Kafka__BootstrapServers (set by Deskribe @resource(kafka.messaging).endpoint)
-var kafkaBootstrap = builder.Configuration["Kafka__BootstrapServers"]
-    ?? builder.Configuration["Kafka:BootstrapServers"]
-    ?? "localhost:9092";
+// --- Kafka Producer --- @resource(kafka.messaging).endpoint
+var kafkaBootstrap = Setting("Kafka:BootstrapServers", "localhost:9092");
 
 builder.Services.AddSingleton<IProducer<string, string>>(sp =>
 {

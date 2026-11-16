@@ -4,10 +4,17 @@
     "replicas": 3,
     "cpu": "500m",
     "memory": "1Gi",
-    "ha": true
+    "ha": true,
+    "secretsStrategy": "external-secrets",
+    "externalSecretsStore": "platform-keyvault"
   },
   "alertRouting": {
-    "default": ["slack://#prod-alerts"],
-    "critical": ["pagerduty://oncall", "slack://#prod-oncall"]
+    "default": [
+      "slack://#prod-alerts"
+    ],
+    "critical": [
+      "pagerduty://oncall",
+      "slack://#prod-oncall"
+    ]
   }
 }

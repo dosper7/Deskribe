@@ -1,3 +1,4 @@
+@inject Deskribe.Web.Services.DeskribeUiService UiService
 <nav class="sidebar">
     <div class="sidebar-brand">
         <div class="logo">D</div>
@@ -32,7 +33,7 @@
 
     <div style="padding: 12px; border-top: 1px solid var(--border-color);">
         <div style="font-size: 12px; color: var(--text-muted); padding: 8px 12px;">
-            v0.2.0
+            v0.2.0 &middot; @(UiService.MutationsEnabled ? "mutations enabled" : "read-only")
         </div>
     </div>
 </nav>

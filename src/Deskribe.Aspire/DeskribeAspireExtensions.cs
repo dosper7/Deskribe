@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Text.Json.Serialization;
 using Aspire.Hosting;
 using Aspire.Hosting.ApplicationModel;
@@ -7,8 +8,11 @@ using Deskribe.Sdk.Models;
 
 namespace Deskribe.Aspire;
 
-public static class DeskribeAspireExtensions
+public static partial class DeskribeAspireExtensions
 {
+    [GeneratedRegex(@"@resource\((?<key>[^)\s]+)\)\.(?<output>[A-Za-z0-9_]+)")]
+    private static partial Regex ReferencePattern();
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true,
@@ -20,7 +24,8 @@ public static class DeskribeAspireExtensions
     {
         ["postgres"] = new PostgresAspireProjection(),
         ["redis"] = new RedisAspireProjection(),
-        ["kafka.messaging"] = new KafkaAspireProjection()
+        ["kafka.messaging"] = new KafkaAspireProjection(),
+        ["kafka"] = new KafkaAspireProjection()
     };
 
     /// <summary>
@@ -37,7 +42,8 @@ public static class DeskribeAspireExtensions
     public static DeskribeResourceMap AddDeskribeManifest(
         this IDistributedApplicationBuilder builder,
         string manifestPath,
-        IEnumerable<IAspireProjection>? additionalProjections = null)
+        IEnumerable<IAspireProjection>? additionalProjections = null,
+        DeskribeAspireOptions? options = null)
     {
         var fullPath = Path.GetFullPath(manifestPath);
         if (!File.Exists(fullPath))
@@ -47,17 +53,19 @@ public static class DeskribeAspireExtensions
         var manifest = JsonSerializer.Deserialize<DeskribeManifest>(json, JsonOptions)
             ?? throw new InvalidOperationException($"Failed to deserialize manifest from {fullPath}");
 
-        return builder.AddDeskribeManifest(manifest, additionalProjections);
+        return builder.AddDeskribeManifest(manifest, additionalProjections, options);
     }
 
     public static DeskribeResourceMap AddDeskribeManifest(
         this IDistributedApplicationBuilder builder,
         DeskribeManifest manifest,
-        IEnumerable<IAspireProjection>? additionalProjections = null)
+        IEnumerable<IAspireProjection>? additionalProjections = null,
+        DeskribeAspireOptions? options = null)
     {
-        var map = new DeskribeResourceMap(manifest.Name);
+        options ??= new DeskribeAspireOptions();
+        var map = new DeskribeResourceMap(manifest);
 
-        // Build projection registry from defaults + any additional
+        // Registry defaults, overridden per call by additionalProjections
         var projections = new Dictionary<string, IAspireProjection>(DefaultProjections);
         if (additionalProjections is not null)
         {
@@ -67,30 +75,74 @@ public static class DeskribeAspireExtensions
 
         foreach (var resource in manifest.Resources)
         {
-            if (projections.TryGetValue(resource.Type, out var projection))
-            {
-                var result = projection.Project(builder, manifest.Name, resource);
-                if (result.Map is not null)
-                    map.Merge(result.Map);
-            }
+            if (map.Entries.ContainsKey(resource.Key))
+                throw new InvalidOperationException(
+                    $"Manifest '{manifest.Name}' declares more than one resource with key '{resource.Key}'. " +
+                    "Give each resource of the same type a distinct \"name\".");
+
+            if (!projections.TryGetValue(resource.Type, out var projection))
+                throw new InvalidOperationException(
+                    $"Resource '{resource.Key}' has type '{resource.Type}', which has no Aspire projection. " +
+                    $"Known types: {string.Join(", ", projections.Keys.Order())}. " +
+                    "Register one with DeskribeAspireExtensions.RegisterProjection or pass it in additionalProjections.");
+
+            var result = projection.Project(builder, manifest.Name, resource, options);
+            map.Add(resource, result);
         }
 
         return map;
     }
 
+    // ReferenceExpression treats literal text as a format string.
+    private static string EscapeBraces(string text) => text.Replace("{", "{{").Replace("}", "}}");
+
+    /// <summary>
+    /// Applies the manifest service's <c>env</c> map to the project: references
+    /// (<c>@resource(key).output</c>) are replaced by the local resource's output, literals are passed
+    /// through, and the project waits for every resource it references.
+    /// </summary>
+    /// <param name="serviceName">
+    /// The manifest service to wire. May be omitted when the manifest declares exactly one service.
+    /// </param>
     public static IResourceBuilder<TProject> WithDeskribeResources<TProject>(
         this IResourceBuilder<TProject> projectBuilder,
-        DeskribeResourceMap resources) where TProject : IResourceWithEnvironment, IResourceWithWaitSupport
+        DeskribeResourceMap resources,
+        string? serviceName = null) where TProject : IResourceWithEnvironment, IResourceWithWaitSupport
     {
-        foreach (var entry in resources.ConnectionStringResources)
+        var service = resources.ResolveService(serviceName);
+        var waitKeys = new HashSet<string>();
+
+        foreach (var (envVar, value) in service.Env)
         {
-            projectBuilder = projectBuilder.WithReference(entry);
+            var matches = ReferencePattern().Matches(value);
+            if (matches.Count == 0)
+            {
+                projectBuilder = projectBuilder.WithEnvironment(envVar, value);
+                continue;
+            }
+
+            var expression = new ReferenceExpressionBuilder();
+            var position = 0;
+            foreach (Match match in matches)
+            {
+                var key = match.Groups["key"].Value;
+                var output = match.Groups["output"].Value;
+                var resolved = resources.GetOutput(envVar, key, output);
+                waitKeys.Add(key);
+
+                if (match.Index > position)
+                    expression.AppendLiteral(EscapeBraces(value[position..match.Index]));
+                expression.AppendFormatted(resolved);
+                position = match.Index + match.Length;
+            }
+            if (position < value.Length)
+                expression.AppendLiteral(EscapeBraces(value[position..]));
+
+            projectBuilder = projectBuilder.WithEnvironment(envVar, expression.Build());
         }
 
-        foreach (var entry in resources.WaitForResources)
-        {
-            projectBuilder = projectBuilder.WaitFor(entry);
-        }
+        foreach (var key in waitKeys)
+            projectBuilder = projectBuilder.WaitFor(resources.Entries[key].Result.WaitFor);
 
         return projectBuilder;
     }
@@ -98,37 +150,58 @@ public static class DeskribeAspireExtensions
 
 public class DeskribeResourceMap
 {
-    public string AppName { get; }
+    public string AppName => Manifest.Name;
+    public DeskribeManifest Manifest { get; }
     public List<DeskribeAspireResource> Resources { get; } = [];
 
-    internal List<IResourceBuilder<IResourceWithConnectionString>> ConnectionStringResources { get; } = [];
-    internal List<IResourceBuilder<IResource>> WaitForResources { get; } = [];
+    internal Dictionary<string, (ResourceDescriptor Descriptor, AspireProjectionResult Result)> Entries { get; } = new();
 
-    public DeskribeResourceMap(string appName)
+    public DeskribeResourceMap(DeskribeManifest manifest)
     {
-        AppName = appName;
+        Manifest = manifest;
     }
 
-    internal void AddConnectionStringResource<T>(IResourceBuilder<T> resource) where T : IResourceWithConnectionString
+    internal void Add(ResourceDescriptor descriptor, AspireProjectionResult result)
     {
-        ConnectionStringResources.Add(resource.AsBuilder<T, IResourceWithConnectionString>());
+        Entries[descriptor.Key] = (descriptor, result);
+        Resources.Add(new DeskribeAspireResource(descriptor.Key, descriptor.Type, result.AspireResourceName, result.ChildResourceName));
     }
 
-    internal void AddWaitForResource<T>(IResourceBuilder<T> resource) where T : IResource
+    internal ServiceDefinition ResolveService(string? serviceName)
     {
-        WaitForResources.Add(resource.AsBuilder<T, IResource>());
+        var services = Manifest.Services;
+        var known = string.Join(", ", services.Select(s => s.Name is null ? "<unnamed>" : $"'{s.Name}'"));
+
+        if (serviceName is null)
+        {
+            return services.Count switch
+            {
+                1 => services[0],
+                0 => throw new InvalidOperationException($"Manifest '{AppName}' declares no services."),
+                _ => throw new InvalidOperationException(
+                    $"Manifest '{AppName}' declares {services.Count} services ({known}); " +
+                    "pass the serviceName to WithDeskribeResources.")
+            };
+        }
+
+        return services.FirstOrDefault(s => s.Name == serviceName)
+            ?? throw new InvalidOperationException(
+                $"Manifest '{AppName}' has no service named '{serviceName}'. Services: {(services.Count == 0 ? "none" : known)}.");
     }
 
-    internal void RegisterResource(string type, string aspireResourceName, string? childResourceName = null)
+    internal ReferenceExpression GetOutput(string envVar, string key, string output)
     {
-        Resources.Add(new DeskribeAspireResource(type, aspireResourceName, childResourceName));
-    }
+        if (!Entries.TryGetValue(key, out var entry))
+            throw new InvalidOperationException(
+                $"Environment variable '{envVar}' references @resource({key}).{output}, but the manifest has no resource " +
+                $"with key '{key}'. Resource keys: {string.Join(", ", Entries.Keys)}.");
 
-    public void Merge(DeskribeResourceMap other)
-    {
-        Resources.AddRange(other.Resources);
-        ConnectionStringResources.AddRange(other.ConnectionStringResources);
-        WaitForResources.AddRange(other.WaitForResources);
+        if (!entry.Result.Outputs.TryGetValue(output, out var expression))
+            throw new InvalidOperationException(
+                $"Environment variable '{envVar}' references @resource({key}).{output}, but resource '{key}' " +
+                $"({entry.Descriptor.Type}) does not offer output '{output}'. Offered outputs: {string.Join(", ", entry.Result.Outputs.Keys)}.");
+
+        return expression;
     }
 }
 
@@ -142,4 +215,4 @@ internal static class ResourceBuilderCastHelper
     }
 }
 
-public record DeskribeAspireResource(string Type, string AspireResourceName, string? ChildResourceName);
+public record DeskribeAspireResource(string Key, string Type, string AspireResourceName, string? ChildResourceName);

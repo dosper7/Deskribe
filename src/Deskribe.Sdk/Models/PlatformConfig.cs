@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace Deskribe.Sdk.Models;
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PlatformConfig
 {
     [JsonPropertyName("organization")]
@@ -17,6 +18,14 @@ public sealed record PlatformConfig
     [JsonPropertyName("provisionerConfigs")]
     public Dictionary<string, Dictionary<string, JsonElement>> ProvisionerConfigs { get; init; } = new();
 
+    /// <summary>
+    /// Capability catalog: per resource type, the constraints and defaults the platform
+    /// allows (for example <c>validSizes</c>, <c>validVersions</c>, <c>defaultVersion</c>).
+    /// </summary>
+    [JsonPropertyName("resources")]
+    public Dictionary<string, Dictionary<string, JsonElement>> Resources { get; init; } = new();
+
+    /// <summary>Resource type → name of the provisioner that fulfils it.</summary>
     [JsonPropertyName("provisioners")]
     public Dictionary<string, string> Provisioners { get; init; } = new();
 
@@ -67,6 +76,7 @@ public sealed record PlatformDefaults
 
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PlatformPolicies
 {
     [JsonPropertyName("allowedRegions")]
@@ -74,4 +84,23 @@ public sealed record PlatformPolicies
 
     [JsonPropertyName("enforceTLS")]
     public bool EnforceTls { get; init; }
+
+    /// <summary>Upper bounds on what a developer's per-environment overrides may request.</summary>
+    [JsonPropertyName("limits")]
+    public WorkloadLimits Limits { get; init; } = new();
+}
+
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+public sealed record WorkloadLimits
+{
+    [JsonPropertyName("maxReplicas")]
+    public int? MaxReplicas { get; init; }
+
+    /// <summary>Kubernetes CPU quantity, for example <c>2</c> or <c>1500m</c>.</summary>
+    [JsonPropertyName("maxCpu")]
+    public string? MaxCpu { get; init; }
+
+    /// <summary>Kubernetes memory quantity, for example <c>4Gi</c>.</summary>
+    [JsonPropertyName("maxMemory")]
+    public string? MaxMemory { get; init; }
 }

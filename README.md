@@ -1,515 +1,190 @@
 # Deskribe
 
-**Intent-as-Code for developers who ship products, not YAML.**
+Deskribe is an intent-as-code tool. A developer describes what an application needs in a `deskribe.json` manifest: resources such as a database, a cache and a Kafka topic, and the services that consume them. A platform team describes how those needs are fulfilled in a platform config. Deskribe validates the manifest against the platform's rules, provisions the infrastructure through provisioner plugins, resolves the references between services and resources into real values, and deploys the workloads to Kubernetes through a runtime plugin.
 
-Deskribe is the translation layer between developers and platform teams. Developers describe *what* they need in `deskribe.json`. Platform teams define *how* it gets provisioned. Nobody touches each other's code.
+Locally, a .NET Aspire bridge runs the same manifest against containers.
 
----
+## Status
 
-## Installation & Setup
+| Area | State |
+|---|---|
+| Validate, plan, generate, status | Exercised against the examples in this repository |
+| Kubernetes deploy (`apply`, `status`, `destroy`) | Covered by unit tests and by integration tests that run against a real cluster when `DESKRIBE_E2E_KUBECONFIG` is set |
+| Pulumi and Terraform provisioners | Covered by unit tests only (mocked stack runner, fake `terraform` binary). They have not been run against real cloud infrastructure |
+| `external-secrets` strategy | Emits `external-secrets.io/v1beta1` objects and assumes the External Secrets Operator and the secret store already exist |
+| Aspire bridge | Verified by producing Aspire's manifest (`--publisher manifest`); not verified with a full container run |
+| `policies.enforceTLS` | Accepted, not enforced. Validation prints a warning |
+| Dashboard | Read-only by default; has no authentication |
 
-### Prerequisites
+Other limitations are listed where they matter: [configuration reference](docs/configuration-reference.md), [system design](docs/system-design.md).
+
+## Prerequisites
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
-- [Docker](https://www.docker.com/) (for Aspire local dev)
-- [Pulumi CLI](https://www.pulumi.com/docs/install/) (optional, for cloud provisioning)
-- [kubectl](https://kubernetes.io/docs/tasks/tools/) (optional, for Kubernetes deployments)
+- `kubectl` access to a cluster, only for `apply`, `status` and `destroy` (Deskribe reads the standard kubeconfig: `KUBECONFIG`, then `~/.kube/config`, or the in-cluster configuration)
+- Docker, only for local development with Aspire
+- The Terraform or Pulumi CLI, only if a platform maps resources to those provisioners
 
-### Clone and Build
+## Quick start
+
+From a fresh clone:
 
 ```bash
 git clone https://github.com/dosper7/Deskribe.git
 cd Deskribe
-dotnet build
+dotnet build src/Deskribe.Cli
+alias deskribe='dotnet src/Deskribe.Cli/bin/Debug/net10.0/Deskribe.Cli.dll'
+
+# Check the manifest against the platform's rules for the dev environment
+deskribe validate -f examples/payments-api/deskribe.json -p examples/platform-config --env dev
+
+# Show what would be provisioned and deployed; nothing is changed
+deskribe plan -f examples/payments-api/deskribe.json -p examples/platform-config --env prod \
+  --image payments-api=ghcr.io/acme/payments-api:1.0.0
 ```
 
-### Install the CLI (global tool)
+`generate` writes GitOps files instead of touching a cluster. The `prod` environment of the example uses the `external-secrets` strategy, so the generated files contain no secret values. Values for the non-secret references come from an outputs file:
 
 ```bash
-# From the repo root
-dotnet pack src/Deskribe.Cli -o ./nupkg
-dotnet tool install --global --add-source ./nupkg Deskribe.Cli
+cat > outputs.json <<'JSON'
+{
+  "redis": { "endpoint": "redis.prod.example.com:6380" },
+  "kafka.messaging": { "bootstrapServers": "kafka.prod.example.com:9093" }
+}
+JSON
 
-# Or run directly without installing
-dotnet run --project src/Deskribe.Cli -- <command>
+deskribe generate -f examples/payments-api/deskribe.json -p examples/platform-config --env prod \
+  --image payments-api=ghcr.io/acme/payments-api:1.0.0 --outputs outputs.json -o ./generated
 ```
 
-### Run Tests
+The CLI is not published to NuGet. To install it as a global tool from a local package:
 
 ```bash
-dotnet test
+dotnet pack src/Deskribe.Cli -c Release -o ./nupkg
+dotnet tool install --global deskribe-cli --add-source ./nupkg --version 0.1.0
+deskribe --help
 ```
 
----
+The package id is `deskribe-cli` and the command is `deskribe`.
 
-## End-to-End Guide
+## The manifest
 
-### Step 1: Write Your Manifest
-
-Create `deskribe.json` in your service repo:
+`deskribe.json` lives in the application repository. This is `examples/payments-api/deskribe.json`, shortened:
 
 ```json
 {
   "name": "payments-api",
+  "team": "mobile-replenishment",
   "resources": [
     { "type": "postgres", "size": "m", "version": "16" },
     { "type": "redis" },
-    { "type": "kafka.messaging", "topics": [
-        { "name": "payments.transactions", "partitions": 6, "retentionHours": 168, "owners": ["team-payments"], "consumers": ["team-fraud"] }
-    ]}
+    { "type": "kafka.messaging", "topics": [ { "name": "payments.transactions", "partitions": 6, "retentionHours": 168, "owners": ["team-payments"] } ] }
   ],
   "services": [
     {
       "env": {
         "ConnectionStrings__Postgres": "@resource(postgres).connectionString",
         "Redis__Endpoint": "@resource(redis).endpoint",
-        "Kafka__BootstrapServers": "@resource(kafka.messaging).endpoint"
+        "Kafka__BootstrapServers": "@resource(kafka.messaging).bootstrapServers"
       },
-      "overrides": {
-        "dev": { "replicas": 1, "cpu": "250m", "memory": "512Mi" },
-        "prod": { "replicas": 3, "cpu": "500m", "memory": "1Gi" }
-      }
+      "overrides": { "prod": { "replicas": 3, "cpu": "500m", "memory": "1Gi" } }
     }
   ]
 }
 ```
 
-### Step 2: Set Up Platform Config
+- A resource is identified by its `name`, or by its `type` when it has no name. `@resource(<key>).<output>` refers to that key.
+- The manifest has no image. The image is supplied at deploy time with `--image name=image:tag`.
+- Unknown properties in the manifest, a service or an override are errors.
 
-Platform teams provide configuration. Use **split-file** format (enterprise) or **single-file** format (small projects):
+## The platform config
 
-**Split-file** (`platform-config/` directory):
+The platform config is a directory (`base.json` plus `envs/<env>.json`) or a single `.json` file with an `environments` map. It sets defaults, the Kubernetes runtime settings, which provisioner fulfils each resource type, the capability catalog, and policies and limits. See `examples/platform-config/` and the [configuration reference](docs/configuration-reference.md).
 
-```
-platform-config/
-  base.json       # Organization defaults
-  envs/
-    dev.json      # Dev overrides
-    prod.json     # Prod overrides
-```
+## Commands
 
-`base.json`:
-```json
-{
-  "organization": "acme",
-  "defaults": {
-    "region": "westeurope",
-    "replicas": 2,
-    "cpu": "250m",
-    "memory": "512Mi",
-    "namespacePattern": "{app}-{env}"
-  },
-  "runtime": { "name": "kubernetes" },
-  "provisioners": { "postgres": "pulumi", "redis": "pulumi", "kafka.messaging": "pulumi" },
-  "policies": { "allowedRegions": ["westeurope", "northeurope"], "enforceTLS": true }
-}
-```
-
-`envs/prod.json`:
-```json
-{
-  "name": "prod",
-  "defaults": { "replicas": 3, "cpu": "500m", "memory": "1Gi", "ha": true }
-}
-```
-
-**Single-file** (`platform.json`):
-```json
-{
-  "organization": "acme",
-  "defaults": { "region": "westeurope", "replicas": 2 },
-  "runtime": { "name": "kubernetes" },
-  "provisioners": { "postgres": "terraform", "redis": "terraform" },
-  "environments": {
-    "dev": { "defaults": { "replicas": 1 } },
-    "prod": { "defaults": { "replicas": 3, "ha": true } }
-  }
-}
-```
-
-### Step 3: Validate
-
-```bash
-deskribe validate -f deskribe.json --env dev --platform ./platform-config
-```
-
-### Step 4: Plan
-
-```bash
-deskribe plan -f deskribe.json --env prod --platform ./platform-config \
-  --image api=ghcr.io/acme/payments-api:v1.2.3
-```
-
-### Step 5: Generate Artifacts (for GitOps / CI/CD)
-
-```bash
-# Generate everything (Terraform + K8s + Kustomize)
-deskribe generate -f deskribe.json --env prod -p ./platform-config -o ./generated/
-
-# Generate only K8s manifests + Kustomize overlays (fastest for K8s/Kustomize pipelines)
-deskribe generate -f deskribe.json --env prod -p ./platform-config -o ./generated/ \
-  --output-format k8s-only
-
-# Generate only Terraform artifacts
-deskribe generate -f deskribe.json --env prod -p ./platform-config -o ./generated/ \
-  --output-format terraform-only
-```
-
-Produces (with `--output-format all`):
-- `terraform.tfvars.json` — resource config for Terraform modules
-- `helm-values.yaml` — workload config for Helm/ArgoCD deployments
-- `bindings.json` — machine-readable resource binding manifest
-- `{app-name}/base/deployment.yaml` — K8s Namespace + Deployment + Service
-- `{app-name}/base/secrets.yaml` — K8s Secret or ExternalSecret
-- `{app-name}/base/kustomization.yaml` — Kustomize base
-- `{app-name}/overlays/{env}/kustomization.yaml` — per-env overlay (replicas, image, resources)
-
-### Step 6: Apply (Direct Deployment)
-
-```bash
-deskribe apply -f deskribe.json --env prod --platform ./platform-config \
-  --image api=ghcr.io/acme/payments-api:v1.2.3
-```
-
-### Step 7: Destroy
-
-```bash
-deskribe destroy -f deskribe.json --env dev --platform ./platform-config
-```
-
----
-
-## Local Development with Aspire
-
-The **same `deskribe.json`** powers your local dev environment via .NET Aspire. No Docker Compose needed.
-
-```bash
-dotnet run --project src/Deskribe.AppHost
-```
-
-This reads the manifest and spins up real containers:
-
-| Manifest resource | What you get |
+| Command | What it does |
 |---|---|
-| `"type": "postgres"` | Postgres container + PgAdmin UI |
-| `"type": "redis"` | Redis container + RedisInsight UI |
-| `"type": "kafka.messaging"` | Kafka container + Kafka UI |
+| `validate` | Loads the manifest and platform config and reports every problem. Exit code 1 on errors; warnings do not fail |
+| `plan` | Validates, then prints resources, workloads, and bindings. Changes nothing |
+| `apply` | Validates, provisions, resolves references, deploys, and waits for the rollout |
+| `generate` | Writes GitOps files: Kubernetes manifests, infrastructure inputs, `bindings.json` |
+| `status` | Reads the deployed workloads from the cluster. Exit code 1 if nothing is deployed or a workload is not ready |
+| `destroy` | Removes the workloads and the provisioned infrastructure. Asks for the app name unless `-y` is given |
 
-The `payments-api` sample project also starts alongside these containers, with connection strings automatically injected.
+Common options: `-f/--file` (default `deskribe.json`), `-p/--platform` (required), `--env` (required). `plan`, `apply` and `generate` also take `--image name=image:tag` (repeatable). Global options: `--plugins-dir`, `--verbose`. Exit codes: 0 success, 1 failure, 130 cancelled.
 
-Open the Aspire dashboard at `http://localhost:15888`.
+## How a deployment proceeds
 
-### Wiring in your AppHost
+`deskribe apply` does the following, in order. It stops at the first failure.
 
-```csharp
-var builder = DistributedApplication.CreateBuilder(args);
+1. Validate the manifest against the platform config and the resource providers.
+2. Plan each resource through its resource provider, and build one workload per service. Every `@resource` reference becomes a binding, marked sensitive when the resource provider declares that output as a credential.
+3. Check that every workload has an image.
+4. Provision: call each provisioner once with only the resources mapped to it. A provisioner returns real outputs or fails; there are no placeholders.
+5. Resolve the references in each workload's environment using those outputs. An unresolved reference is an error.
+6. Deploy through the runtime plugin: create the namespace if it is allowed to, apply the Secret (or ExternalSecret), Service and Deployment, wait for the rollout, then delete objects that Deskribe previously deployed for this app and environment and that are no longer declared.
 
-var resources = builder.AddDeskribeManifest("path/to/deskribe.json");
+`destroy` removes the runtime objects first and then asks each provisioner to destroy its infrastructure. It attempts every step and reports all failures at the end.
 
-// Your application — gets all resource connections auto-wired
-builder.AddProject<Projects.PaymentsApi>("payments-api")
-    .WithDeskribeResources(resources);
+Deskribe keeps no state of its own. Infrastructure state lives wherever the provisioner keeps it (Pulumi, Terraform). Runtime state is the labelled objects in the cluster.
 
-// Deskribe Web UI — dashboard for visibility
-builder.AddProject<Projects.Deskribe_Web>("deskribe-web")
-    .WithDeskribeResources(resources);
+## Local development with Aspire
 
-builder.Build().Run();
-```
+`Deskribe.Aspire` turns the manifest's resources into local containers and wires the service's `env` map to them. `src/Deskribe.AppHost` is a working host for the example. See [docs/aspire-integration.md](docs/aspire-integration.md), including a path problem you will hit when starting the AppHost unmodified.
 
----
+## Plugins
 
-## Architecture
+Everything backend-specific is a plugin:
 
-### Three Plugin Types
-
-```
-  Resource Provider (what)     Provisioner (how)          Runtime Plugin (where)
-  ──────────────────────       ─────────────────          ────────────────────────
-  "I need postgres v16"   →   Pulumi/Terraform     →    Kubernetes Deployment
-  Validates, plans outputs     provisions real infra      injects env vars, deploys
-```
-
-| Plugin Type | Interface | Example |
+| Kind | Built in | Role |
 |---|---|---|
-| **Resource Provider** | `IResourceProvider` | PostgresResourceProvider validates size/version, plans outputs |
-| **Provisioner** | `IProvisioner` | PulumiProvisioner runs `pulumi up`, TerraformProvisioner generates tfvars |
-| **Runtime Plugin** | `IRuntimePlugin` | KubernetesRuntimePlugin renders Namespace + Secret + Deployment + Service |
+| Resource provider | `postgres`, `redis`, `kafka.messaging` | Validates a resource and plans its configuration; declares its outputs |
+| Provisioner | `pulumi`, `terraform`, `static`, `platform-output` | Creates infrastructure and returns outputs, or writes GitOps inputs |
+| Runtime | `kubernetes` | Renders, applies, prunes, reports status, destroys |
 
-### Plugin Discovery
+External plugins are DLLs in `~/.deskribe/plugins` (or `--plugins-dir`). See [docs/plugin-development.md](docs/plugin-development.md).
 
-Plugins are discovered automatically via `[DeskribePlugin]` attribute and assembly scanning:
+## Dashboard
 
-```csharp
-[DeskribePlugin("postgres")]
-public class PostgresPlugin : IPlugin { ... }
-```
-
-Register via DI:
-```csharp
-services.AddDeskribe(
-    typeof(PostgresPlugin).Assembly,
-    typeof(PulumiPlugin).Assembly,
-    typeof(KubernetesPlugin).Assembly);
-```
-
-### Resource Schema
-
-Each resource plugin reports its schema for validation, UI generation, and documentation:
-
-```csharp
-public ResourceSchema GetSchema() => new()
-{
-    ResourceType = "postgres",
-    Description = "PostgreSQL database",
-    Properties = [
-        new() { Name = "version", ValueType = "string", Default = "16" },
-        new() { Name = "ha", ValueType = "bool" }
-    ],
-    ProvidedOutputs = ["connectionString", "host", "port"]
-};
-```
-
----
-
-## The `@resource()` Syntax
-
-Environment variables reference provisioned resources:
-
-```json
-{
-  "env": {
-    "ConnectionStrings__Postgres": "@resource(postgres).connectionString",
-    "Redis__Endpoint": "@resource(redis).endpoint"
-  }
-}
-```
-
-- **Plan phase**: Validated that referenced resources and outputs exist
-- **Apply phase**: Resolved to real values from provisioner outputs
-- **Local dev**: Aspire injects connection strings automatically
-
----
-
-## Web Dashboard
-
-Deskribe includes a web UI built with Blazor Server:
+`src/Deskribe.Web` is a Blazor dashboard that lists the manifests it finds, shows validation, plans, bindings and deployment status. It is read-only by default: apply and destroy are disabled unless `Deskribe:EnableMutations` is `true`, and the HTTP API only has `GET` endpoints. It has no authentication, so do not expose it and do not enable mutations on a shared network. Secret values are never shown. See [system design](docs/system-design.md#dashboard).
 
 ```bash
 dotnet run --project src/Deskribe.Web
-# Or via Aspire (recommended — starts all containers too):
-dotnet run --project src/Deskribe.AppHost
 ```
 
-Features:
-- **Dynamic app discovery** — scans `examples/` for `deskribe.json` manifests automatically
-- **Dashboard** — application count, environments, resources, real status tracking
-- **Resource overview** — per-type counts (Postgres, Redis, Kafka) across all apps
-- **Plan Viewer** — generate plans, view K8s YAML previews, Apply and Destroy with confirmation dialogs
-- **Environment switcher** — navigate between dev/prod per application
-- **Container image input** — set the image from the UI before planning
-- **Real status tracking** — tracks `Unknown → Planned → Applied → Error → Destroyed` per app/env
+It reads manifests from `Deskribe:ManifestsRoot` and the platform config from `Deskribe:PlatformPath`, defaulting to this repository's `examples` and `examples/platform-config`.
 
-### API Endpoints
-
-The dashboard exposes a Minimal API:
+## Project structure
 
 ```
-GET  /api/apps                        — discover applications
-GET  /api/apps/{name}/manifest        — parsed manifest
-GET  /api/apps/{name}/validate/{env}  — validation result
-GET  /api/apps/{name}/plan/{env}      — execution plan
-GET  /api/plugins                     — registered plugins + schemas
+src/
+  Deskribe.Sdk/            Plugin contracts and models; no dependencies
+  Deskribe.Core/           Engine, config loading, merging, validation, plugin registry
+  Deskribe.Cli/            The deskribe command
+  Deskribe.Web/            Read-only dashboard and API
+  Deskribe.Aspire/         Aspire bridge (manifest -> local containers)
+  Deskribe.AppHost/        Aspire host for the example
+  Deskribe.ServiceDefaults/  Shared telemetry and health defaults
+  Plugins/
+    Resources/{Postgres,Redis,Kafka}
+    Provisioners/{Pulumi,Terraform,Static,PlatformOutput}
+    Runtimes/Kubernetes
+tests/                     Core, plugin, and Kubernetes runtime tests
+examples/                  payments-api (manifest + app), platform-config, platform-config-local
+.github/workflows/deskribe-deploy.yml
 ```
 
----
-
-## Secrets Management
-
-Three strategies, configured in platform defaults:
-
-| Strategy | Description | Config |
-|----------|-------------|--------|
-| `opaque` (default) | Standard K8s Secret with stringData | `"secretsStrategy": "opaque"` |
-| `external-secrets` | ExternalSecret CRD synced from Key Vault / Secrets Manager | `"secretsStrategy": "external-secrets"` |
-| `sealed-secrets` | Secret with Bitnami Sealed Secrets annotation | `"secretsStrategy": "sealed-secrets"` |
-
----
-
-## CI/CD Integration
-
-Deskribe ships a GitHub Actions workflow at [`.github/workflows/deskribe-deploy.yml`](.github/workflows/deskribe-deploy.yml) that:
-
-1. **Builds** your app, runs tests, pushes a Docker image
-2. **Validates** the manifest against platform policies (matrix: dev, prod)
-3. **Generates** K8s manifests + Kustomize overlays via `deskribe generate --output-format k8s-only`
-4. **Pushes** the generated manifests to a separate deployments repo (e.g. `more-deployments`)
-5. **Posts** a plan summary as a PR comment on pull requests
-
-### Quick Setup
-
-1. Place `deskribe.json` in your app repo root
-2. Set GitHub secrets: `DEPLOYMENTS_REPO_TOKEN` (PAT with write access to the deployments repo)
-3. Set GitHub variables: `DEPLOYMENTS_REPO` (e.g. `RELEX-Solutions/more-deployments`)
-
-### GitHub Actions Example
-
-```yaml
-name: Deploy
-on:
-  push:
-    branches: [main]
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Validate
-        run: deskribe validate -f deskribe.json --env prod --platform platform-config
-
-      - name: Generate K8s Manifests
-        run: |
-          deskribe generate -f deskribe.json --env prod \
-            -p platform-config -o ./output \
-            --image api=${{ github.repository }}:${{ github.sha }} \
-            --output-format k8s-only
-
-      - name: Push to deployments repo
-        run: |
-          # Copy output/{app-name}/ into your deployments repo
-          # Your existing GitHub Actions apply them via kubectl apply -k
-```
-
-### GitOps Flow
-
-```
-Developer edits deskribe.json
-    → CI runs `deskribe validate` + `deskribe generate --output-format k8s-only`
-    → Generated Kustomize manifests pushed to deployments repo
-    → Existing pipeline applies via kubectl apply -k / ArgoCD
-```
-
-See [docs/cicd-integration.md](docs/cicd-integration.md) for the full guide.
-
----
-
-## Project Structure
-
-```
-Deskribe/
-  .github/
-    workflows/
-      deskribe-deploy.yml      GitHub Actions CI/CD workflow
-  src/
-    Deskribe.Sdk/              Plugin contracts, models, ResourceDescriptor
-    Deskribe.Core/             Engine, config loader, merge, validation, resolution
-    Deskribe.Cli/              CLI (validate, plan, apply, destroy, generate)
-    Deskribe.Web/              Blazor Server web dashboard + Minimal API
-    Deskribe.Web.Client/       Blazor WASM client (alternative UI)
-    Deskribe.Aspire/           Manifest-to-Aspire bridge + projections
-    Deskribe.AppHost/          Aspire orchestrator
-    Deskribe.ServiceDefaults/  OpenTelemetry, health checks
-    Plugins/
-      Provisioners/
-        Pulumi/                Pulumi Automation API provisioner
-        Terraform/             Terraform artifact generator provisioner
-      Resources/
-        Postgres/              PostgreSQL resource provider
-        Redis/                 Redis resource provider
-        Kafka/                 Kafka messaging resource provider
-      Runtimes/
-        Kubernetes/            K8s runtime plugin (Deployment, Secret, Service)
-  tests/
-    Deskribe.Core.Tests/       Engine, merge, reference resolver tests
-    Deskribe.Plugins.Tests/    Postgres, Kafka, secrets strategy tests
-  examples/
-    payments-api/
-      deskribe.json            Manifest: Postgres + Redis + Kafka
-      src/                     .NET Minimal API sample project
-        Program.cs             Wires Postgres (EF), Redis, Kafka producer
-        Endpoints/             POST/GET /api/payments
-        Models/                Payment entity
-        Data/                  EF Core DbContext
-        Dockerfile             Multi-stage build
-    platform-config/           Sample platform config (split-file format)
-      base.json
-      envs/
-        dev.json
-        prod.json
-```
-
----
-
-## E2E Example: Payments API
-
-A complete working example with a .NET Minimal API that uses Postgres (EF Core), Redis (caching), and Kafka (event publishing).
-
-### Local Dev (Aspire)
-
-```bash
-# Starts payments-api + Postgres + Redis + Kafka + Deskribe Web UI
-dotnet run --project src/Deskribe.AppHost
-
-# Test the API
-curl http://localhost:{port}/api/payments                           # GET  — list payments
-curl -X POST http://localhost:{port}/api/payments \
-  -H "Content-Type: application/json" \
-  -d '{"amount": 99.99, "currency": "EUR"}'                        # POST — create payment
-curl http://localhost:{port}/api/payments/{id}                      # GET  — get by ID (Redis cached)
-curl http://localhost:{port}/health                                 # GET  — health check
-```
-
-### Generate K8s Manifests
-
-```bash
-deskribe generate \
-  -f examples/payments-api/deskribe.json \
-  --env prod --platform examples/platform-config \
-  -o ./output --output-format k8s-only \
-  --image api=ghcr.io/acme/payments-api:v1.2.3
-```
-
-### Deploy to Kubernetes
-
-```bash
-deskribe apply \
-  -f examples/payments-api/deskribe.json \
-  --env prod --platform examples/platform-config \
-  --image api=ghcr.io/acme/payments-api:v1.2.3
-
-# Or apply the generated Kustomize overlays directly:
-kubectl apply -k output/payments-api/overlays/prod
-```
-
----
+Run the tests with `dotnet test Deskribe.slnx`. Kubernetes integration tests are skipped unless `DESKRIBE_E2E_KUBECONFIG` points at a kubeconfig file.
 
 ## Documentation
 
-- [Configuration Reference](docs/configuration-reference.md) — manifest & platform config schema, token substitution
-- [Examples Guide](examples/README.md) — walkthrough of the payments-api and platform-config samples
-- [CI/CD Integration](docs/cicd-integration.md)
-- [Aspire Integration](docs/aspire-integration.md)
-- [Platform Teams](docs/platform-teams.md)
-- [Plugin Development](docs/plugin-development.md)
-- [System Design](docs/system-design.md)
-- [Design Review](docs/design-review.md) — 2026-11 review: findings, fixes, and recommendations
-
----
-
-## Philosophy
-
-1. **One file to rule them all** — `deskribe.json` is the single source of truth
-2. **Don't reinvent, integrate** — Aspire for local dev, Pulumi/Terraform for prod, K8s for runtime
-3. **Separation of concerns** — Developers own intent, platform teams own implementation
-4. **Progressive disclosure** — Start with `{ "type": "postgres" }`, add details only when needed
-5. **Shift left** — Validate and plan before deploying. Catch policy violations in CI, not in prod
-
----
-
-## License
-
-MIT
+- [Configuration reference](docs/configuration-reference.md): manifest, platform config, validation rules
+- [Platform team guide](docs/platform-teams.md): organising a platform config, provisioners, regions
+- [System design](docs/system-design.md): architecture, data flow, the Kubernetes runtime, state
+- [Plugin development](docs/plugin-development.md)
+- [Aspire integration](docs/aspire-integration.md)
+- [CI/CD and GitOps](docs/cicd-integration.md)
+- [Examples](examples/README.md)
+- [Design review (2026-11)](docs/design-review.md): an earlier review, kept for history
+- [Product intent](deskribe-idea-inception-draft.md)

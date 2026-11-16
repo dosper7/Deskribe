@@ -15,62 +15,101 @@ public class MergeEngine
         _defaults = defaults ?? new EngineDefaults();
     }
 
-    public WorkloadPlan MergeWorkloadPlan(
-        DeskribeManifest manifest,
-        PlatformConfig platform,
-        EnvironmentConfig envConfig,
-        string environment,
-        string? image)
+    /// <summary>
+    /// Effective defaults for one environment: environment value, else platform value,
+    /// else engine default, for every field.
+    /// </summary>
+    public PlatformDefaults MergeDefaults(PlatformConfig platform, EnvironmentConfig? envConfig)
     {
-        _logger.LogInformation("Merging workload plan for {App} in {Env}", manifest.Name, environment);
-
-        // Nullable-based 3-tier merge: platform -> environment -> developer
-        var replicas = envConfig.Defaults?.Replicas ?? platform.Defaults.Replicas ?? _defaults.Replicas;
-        var cpu = envConfig.Defaults?.Cpu ?? platform.Defaults.Cpu ?? _defaults.Cpu;
-        var memory = envConfig.Defaults?.Memory ?? platform.Defaults.Memory ?? _defaults.Memory;
-
-        // Developer per-env overrides win
-        var service = manifest.Services.FirstOrDefault();
-        if (service?.Overrides.TryGetValue(environment, out var devOverride) == true)
+        var env = envConfig?.Defaults;
+        var plat = platform.Defaults;
+        return new PlatformDefaults
         {
-            if (devOverride.Replicas.HasValue)
-                replicas = devOverride.Replicas.Value;
-            if (devOverride.Cpu is not null)
-                cpu = devOverride.Cpu;
-            if (devOverride.Memory is not null)
-                memory = devOverride.Memory;
-        }
-
-        var nsPattern = platform.Defaults.NamespacePattern ?? _defaults.NamespacePattern;
-        var ns = NamespaceInterpolator.Resolve(nsPattern, manifest.Team, manifest.Name, environment);
-
-        return new WorkloadPlan
-        {
-            AppName = manifest.Name,
-            Environment = environment,
-            Team = manifest.Team,
-            Namespace = ns,
-            Image = image,
-            Replicas = replicas,
-            Cpu = cpu,
-            Memory = memory,
-            EnvironmentVariables = service?.Env ?? new(),
-            SecretsStrategy = platform.Defaults.SecretsStrategy ?? _defaults.SecretsStrategy,
-            ExternalSecretsStore = platform.Defaults.ExternalSecretsStore
+            Runtime = env?.Runtime ?? plat.Runtime ?? _defaults.Runtime,
+            Region = env?.Region ?? plat.Region ?? _defaults.Region,
+            Replicas = env?.Replicas ?? plat.Replicas ?? _defaults.Replicas,
+            Cpu = env?.Cpu ?? plat.Cpu ?? _defaults.Cpu,
+            Memory = env?.Memory ?? plat.Memory ?? _defaults.Memory,
+            NamespacePattern = env?.NamespacePattern ?? plat.NamespacePattern ?? _defaults.NamespacePattern,
+            Ha = env?.Ha ?? plat.Ha ?? _defaults.Ha,
+            SecretsStrategy = env?.SecretsStrategy ?? plat.SecretsStrategy ?? _defaults.SecretsStrategy,
+            ExternalSecretsStore = env?.ExternalSecretsStore ?? plat.ExternalSecretsStore ?? _defaults.ExternalSecretsStore
         };
     }
 
-    public PlatformDefaults MergeDefaults(PlatformConfig platform, EnvironmentConfig envConfig)
+    public static string ResolveNamespace(PlatformDefaults defaults, string? team, string app, string environment) =>
+        NamespaceInterpolator.Resolve(defaults.NamespacePattern ?? "{app}-{env}", team, app, environment);
+
+    /// <summary>
+    /// The workload name for a service: the app name when the manifest has exactly one
+    /// service, otherwise <c>{app}-{service}</c>. Null when a name cannot be derived.
+    /// </summary>
+    public static string? GetWorkloadName(DeskribeManifest manifest, ServiceDefinition service)
     {
-        return new PlatformDefaults
+        if (manifest.Services.Count == 1)
+            return manifest.Name;
+        return string.IsNullOrEmpty(service.Name) ? null : $"{manifest.Name}-{service.Name}";
+    }
+
+    /// <summary>Replicas/cpu/memory for a service: per-environment override, else effective default.</summary>
+    public static (int Replicas, string Cpu, string Memory) ResolveSizing(
+        ServiceDefinition service, PlatformDefaults defaults, string environment)
+    {
+        service.Overrides.TryGetValue(environment, out var o);
+        return (
+            o?.Replicas ?? defaults.Replicas ?? 2,
+            o?.Cpu ?? defaults.Cpu ?? "250m",
+            o?.Memory ?? defaults.Memory ?? "512Mi");
+    }
+
+    /// <summary>
+    /// Image lookup: by service name, then by workload name; with exactly one service and
+    /// exactly one image supplied, that image whatever its key.
+    /// </summary>
+    public static string? FindImage(
+        DeskribeManifest manifest, ServiceDefinition service, string workloadName, IReadOnlyDictionary<string, string>? images)
+    {
+        if (images is null || images.Count == 0)
+            return null;
+        if (service.Name is not null && images.TryGetValue(service.Name, out var byService))
+            return byService;
+        if (images.TryGetValue(workloadName, out var byWorkload))
+            return byWorkload;
+        if (manifest.Services.Count == 1 && images.Count == 1)
+            return images.Values.First();
+        return null;
+    }
+
+    /// <summary>Builds the workload for one service. Secret keys are classified by the caller.</summary>
+    public WorkloadPlan BuildWorkload(
+        DeskribeManifest manifest,
+        ServiceDefinition service,
+        PlatformDefaults defaults,
+        string environment,
+        string ns,
+        IReadOnlyDictionary<string, string>? images)
+    {
+        var name = GetWorkloadName(manifest, service)
+            ?? throw new DeskribeException($"Service in app '{manifest.Name}' has no name; every service needs one when the app has several.");
+        var (replicas, cpu, memory) = ResolveSizing(service, defaults, environment);
+
+        _logger.LogDebug("Merged workload {Workload} for {Env}", LogText.Clean(name), LogText.Clean(environment));
+
+        return new WorkloadPlan
         {
-            Runtime = envConfig.Defaults?.Runtime ?? platform.Defaults.Runtime ?? _defaults.Runtime,
-            Region = envConfig.Defaults?.Region ?? platform.Defaults.Region ?? _defaults.Region,
-            Replicas = envConfig.Defaults?.Replicas ?? platform.Defaults.Replicas ?? _defaults.Replicas,
-            Cpu = envConfig.Defaults?.Cpu ?? platform.Defaults.Cpu ?? _defaults.Cpu,
-            Memory = envConfig.Defaults?.Memory ?? platform.Defaults.Memory ?? _defaults.Memory,
-            NamespacePattern = envConfig.Defaults?.NamespacePattern ?? platform.Defaults.NamespacePattern ?? _defaults.NamespacePattern,
-            Ha = envConfig.Defaults?.Ha ?? platform.Defaults.Ha
+            Name = name,
+            AppName = manifest.Name,
+            ServiceName = service.Name,
+            Environment = environment,
+            Namespace = ns,
+            Team = manifest.Team,
+            Image = FindImage(manifest, service, name, images),
+            Replicas = replicas,
+            Cpu = cpu,
+            Memory = memory,
+            EnvironmentVariables = new Dictionary<string, string>(service.Env),
+            SecretsStrategy = defaults.SecretsStrategy ?? SecretsStrategies.Opaque,
+            ExternalSecretsStore = defaults.ExternalSecretsStore
         };
     }
 }

@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace Deskribe.Sdk.Models;
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ServiceDefinition
 {
     [JsonPropertyName("name")]
@@ -14,6 +15,7 @@ public sealed record ServiceDefinition
     public Dictionary<string, ServiceOverride> Overrides { get; init; } = new();
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record ServiceOverride
 {
     [JsonPropertyName("replicas")]

@@ -7,12 +7,12 @@
     <Project Path="src/Deskribe.Sdk/Deskribe.Sdk.csproj" />
     <Project Path="src/Deskribe.ServiceDefaults/Deskribe.ServiceDefaults.csproj" />
     <Project Path="src/Deskribe.Web/Deskribe.Web.csproj" />
-    <Project Path="src/Deskribe.Web.Client/Deskribe.Web.Client.csproj" />
   </Folder>
   <Folder Name="/src/Plugins/Provisioners/">
     <Project Path="src/Plugins/Provisioners/Pulumi/Deskribe.Plugins.Provisioner.Pulumi.csproj" />
     <Project Path="src/Plugins/Provisioners/Terraform/Deskribe.Plugins.Provisioner.Terraform.csproj" />
     <Project Path="src/Plugins/Provisioners/PlatformOutput/Deskribe.Plugins.Provisioner.PlatformOutput.csproj" />
+    <Project Path="src/Plugins/Provisioners/Static/Deskribe.Plugins.Provisioner.Static.csproj" />
   </Folder>
   <Folder Name="/src/Plugins/Resources/">
     <Project Path="src/Plugins/Resources/Kafka/Deskribe.Plugins.Resources.Kafka.csproj" />
@@ -28,5 +28,6 @@
   <Folder Name="/tests/">
     <Project Path="tests/Deskribe.Core.Tests/Deskribe.Core.Tests.csproj" />
     <Project Path="tests/Deskribe.Plugins.Tests/Deskribe.Plugins.Tests.csproj" />
+    <Project Path="tests/Deskribe.Plugins.Runtime.Kubernetes.Tests/Deskribe.Plugins.Runtime.Kubernetes.Tests.csproj" />
   </Folder>
 </Solution>

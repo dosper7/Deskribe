@@ -8,46 +8,12 @@ public class RedisResourceProvider : IResourceProvider
 {
     public string ResourceType => "redis";
 
-    // Defaults; platform teams can replace them via provisionerConfigs.redis
-    // (keys: validSizes, port).
+    // Defaults; platform teams replace them via platform.resources.redis
+    // (falling back to provisionerConfigs.redis): validSizes, port.
     private static readonly HashSet<string> DefaultValidSizes = ["xs", "s", "m", "l", "xl"];
     private const string DefaultPort = "6379";
 
-    private static ProviderConstraints GetConstraints(PlatformConfig platform) =>
-        platform.ProvisionerConfigs.TryGetValue("redis", out var config)
-            ? ProviderConstraints.From(config)
-            : ProviderConstraints.Empty;
-
-    private sealed record ProviderConstraints(HashSet<string>? ValidSizes, string? Port)
-    {
-        public static readonly ProviderConstraints Empty = new(null, null);
-
-        public static ProviderConstraints From(Dictionary<string, JsonElement> config) => new(
-            ReadValidSizes(config),
-            ReadPort(config, "port"));
-
-        private static HashSet<string>? ReadValidSizes(Dictionary<string, JsonElement> config)
-        {
-            if (!config.TryGetValue("validSizes", out var element) || element.ValueKind != JsonValueKind.Array)
-                return null;
-            return [.. element.EnumerateArray()
-                .Select(e => e.GetString())
-                .Where(s => s is not null)
-                .Select(s => s!)];
-        }
-
-        private static string? ReadPort(Dictionary<string, JsonElement> config, string key)
-        {
-            if (!config.TryGetValue(key, out var element))
-                return null;
-            return element.ValueKind switch
-            {
-                JsonValueKind.String => element.GetString(),
-                JsonValueKind.Number when element.TryGetInt32(out var port) => port.ToString(),
-                _ => null
-            };
-        }
-    }
+    private static readonly string[] AllowedProperties = ["version", "ha", "maxMemoryMb"];
 
     public ResourceSchema GetSchema() => new()
     {
@@ -59,16 +25,26 @@ public class RedisResourceProvider : IResourceProvider
             new() { Name = "ha", ValueType = "bool", Description = "Enable high availability" },
             new() { Name = "maxMemoryMb", ValueType = "int", Description = "Maximum memory in MB" }
         ],
-        ProvidedOutputs = ["endpoint", "host", "port"]
+        ProvidedOutputs = ["connectionString", "endpoint", "host", "port"],
+        SensitiveOutputs = ["connectionString"]
     };
 
     public Task<ValidationResult> ValidateAsync(ResourceDescriptor resource, ValidationContext ctx, CancellationToken ct)
     {
         var errors = new List<string>();
-        var validSizes = GetConstraints(ctx.Platform).ValidSizes ?? DefaultValidSizes;
+        var validSizes = ProviderSupport.StringSet(ctx.Platform, "redis", "validSizes") ?? DefaultValidSizes;
+
+        ProviderSupport.RejectUnknown(resource, AllowedProperties, "redis", errors);
 
         if (resource.Size is not null && !validSizes.Contains(resource.Size))
             errors.Add($"Invalid Redis size '{resource.Size}'. Valid sizes: {string.Join(", ", validSizes)}");
+
+        ProviderSupport.CheckBool(resource, "ha", errors);
+        ProviderSupport.CheckKind(resource, "version", JsonValueKind.String, "a string", errors);
+
+        if (resource.Properties.TryGetValue("maxMemoryMb", out var m)
+            && !(m.ValueKind == JsonValueKind.Number && m.TryGetInt32(out var mb) && mb >= 1))
+            errors.Add($"Property 'maxMemoryMb' on resource '{resource.Key}' must be a positive integer");
 
         return Task.FromResult(errors.Count == 0
             ? ValidationResult.Valid()
@@ -77,28 +53,26 @@ public class RedisResourceProvider : IResourceProvider
 
     public Task<ResourcePlanResult> PlanAsync(ResourceDescriptor resource, PlanContext ctx, CancellationToken ct)
     {
-        var constraints = GetConstraints(ctx.Platform);
-        var ha = resource.Properties.TryGetValue("ha", out var h) ? h.GetBoolean() : ctx.EnvironmentConfig.Defaults?.Ha ?? false;
-        var size = resource.Size ?? "s";
+        var configuration = new Dictionary<string, object?>
+        {
+            ["size"] = resource.Size ?? "s",
+            ["ha"] = ProviderSupport.ReadBool(resource, "ha") ?? ctx.Defaults.Ha ?? false,
+            ["port"] = ProviderSupport.Port(ctx.Platform, "redis") ?? DefaultPort,
+            ["appName"] = ctx.AppName,
+            ["environment"] = ctx.Environment,
+            ["region"] = ctx.Defaults.Region
+        };
+        if (ProviderSupport.ReadString(resource, "version") is { } version)
+            configuration["version"] = version;
+        if (resource.Properties.TryGetValue("maxMemoryMb", out var m)
+            && m.ValueKind == JsonValueKind.Number && m.TryGetInt32(out var mb))
+            configuration["maxMemoryMb"] = mb;
 
         return Task.FromResult(new ResourcePlanResult
         {
+            ResourceKey = resource.Key,
             ResourceType = "redis",
-            Action = "create",
-            PlannedOutputs = new Dictionary<string, string>
-            {
-                ["endpoint"] = $"<pending:{ctx.AppName}-redis>",
-                ["host"] = $"<pending:{ctx.AppName}-redis-host>",
-                ["port"] = constraints.Port ?? DefaultPort
-            },
-            Configuration = new Dictionary<string, object?>
-            {
-                ["size"] = size,
-                ["ha"] = ha,
-                ["appName"] = ctx.AppName,
-                ["environment"] = ctx.Environment,
-                ["region"] = ctx.Platform.Defaults.Region
-            }
+            Configuration = configuration
         });
     }
 }

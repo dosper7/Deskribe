@@ -18,17 +18,17 @@
     <div class="stat-card">
         <span class="stat-label">Postgres</span>
         <span class="stat-value text-blue">@postgresCount</span>
-        <span class="stat-detail">Bitnami Helm Chart</span>
+        <span class="stat-detail">declared</span>
     </div>
     <div class="stat-card">
         <span class="stat-label">Redis</span>
         <span class="stat-value text-orange">@redisCount</span>
-        <span class="stat-detail">Bitnami Helm Chart</span>
+        <span class="stat-detail">declared</span>
     </div>
     <div class="stat-card">
         <span class="stat-label">Kafka</span>
         <span class="stat-value text-purple">@kafkaCount</span>
-        <span class="stat-detail">Bitnami Helm Chart</span>
+        <span class="stat-detail">declared</span>
     </div>
 </div>
 
@@ -41,6 +41,7 @@
             <thead>
                 <tr>
                     <th>Application</th>
+                    <th>Key</th>
                     <th>Type</th>
                     <th>Size</th>
                     <th>Backend</th>
@@ -54,6 +55,7 @@
                     {
                         <tr>
                             <td style="font-weight: 600;">@appName</td>
+                            <td>@r.Key</td>
                             <td><span class="badge badge-resource">@r.Type</span></td>
                             <td>@(r.Size ?? "default")</td>
                             <td>@(platformConfig?.Provisioners.GetValueOrDefault(r.Type) ?? "—")</td>

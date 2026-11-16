@@ -2,6 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace Deskribe.Sdk.Models;
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record DeskribeManifest
 {
     [JsonPropertyName("name")]

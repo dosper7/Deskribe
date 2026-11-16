@@ -4,25 +4,33 @@ using Deskribe.Sdk.Models;
 
 namespace Deskribe.Aspire.Projections;
 
+/// <summary>Outputs: bootstrapServers and endpoint (same value, host:port).</summary>
 public class KafkaAspireProjection : IAspireProjection
 {
     public string ResourceType => "kafka.messaging";
 
-    public AspireProjectionResult Project(IDistributedApplicationBuilder builder, string appName, ResourceDescriptor resource)
+    public AspireProjectionResult Project(
+        IDistributedApplicationBuilder builder, string appName, ResourceDescriptor resource, DeskribeAspireOptions options)
     {
-        var map = new DeskribeResourceMap(appName);
-
-        var name = $"{appName}-kafka";
+        var name = ProjectionHelpers.ResourceName(appName, resource.Key);
 
         var kafka = builder.AddKafka(name);
 
-        kafka = kafka.WithKafkaUI();
-        kafka = kafka.WithLifetime(ContainerLifetime.Persistent);
+        if (options.DeveloperTools)
+            kafka = kafka.WithKafkaUI();
+        kafka = ProjectionHelpers.ApplyLifetime(kafka, options);
 
-        map.AddConnectionStringResource(kafka);
-        map.AddWaitForResource(kafka);
-        map.RegisterResource("kafka.messaging", name);
+        var bootstrap = ReferenceExpression.Create($"{kafka.Resource.Host}:{kafka.Resource.Port}");
 
-        return new AspireProjectionResult { Map = map };
+        return new AspireProjectionResult
+        {
+            AspireResourceName = name,
+            WaitFor = kafka.AsBuilder<KafkaServerResource, IResource>(),
+            Outputs = new Dictionary<string, ReferenceExpression>
+            {
+                ["bootstrapServers"] = bootstrap,
+                ["endpoint"] = bootstrap
+            }
+        };
     }
 }

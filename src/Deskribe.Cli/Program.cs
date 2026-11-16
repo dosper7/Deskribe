@@ -6,6 +6,7 @@ using Deskribe.Core.Engine;
 using Deskribe.Core.Plugins;
 using Deskribe.Plugins.Provisioner.PlatformOutput;
 using Deskribe.Plugins.Provisioner.Pulumi;
+using Deskribe.Plugins.Provisioner.Static;
 using Deskribe.Plugins.Provisioner.Terraform;
 using Deskribe.Plugins.Resources.Kafka;
 using Deskribe.Plugins.Resources.Postgres;
@@ -25,6 +26,9 @@ for (var i = 0; i < args.Length - 1; i++)
     }
 }
 
+var verbose = args.Contains("--verbose");
+Cli.Verbose = verbose;
+
 var builtInAssemblies = new Assembly[]
 {
     typeof(PostgresPlugin).Assembly,
@@ -34,14 +38,16 @@ var builtInAssemblies = new Assembly[]
     typeof(TerraformPlugin).Assembly,
     typeof(KubernetesPlugin).Assembly,
     typeof(PlatformOutputPlugin).Assembly,
+    typeof(StaticPlugin).Assembly,
 };
 
 var services = new ServiceCollection();
 
 services.AddLogging(builder =>
 {
-    builder.AddConsole();
-    builder.SetMinimumLevel(LogLevel.Information);
+    // Logs go to stderr so command output stays clean on stdout.
+    builder.AddConsole(o => o.LogToStandardErrorThreshold = LogLevel.Trace);
+    builder.SetMinimumLevel(verbose ? LogLevel.Information : LogLevel.Warning);
 });
 
 services.AddDeskribe(builtInAssemblies, pluginsDir);
@@ -54,21 +60,12 @@ var pluginsDirOption = new Option<string>(
     "--plugins-dir",
     () => PluginLoader.DefaultPluginsDirectory,
     "Directory to load external plugin DLLs from");
+var verboseOption = new Option<bool>("--verbose", "Show informational engine logs");
 
-var rootCommand = new RootCommand("Deskribe — Intent-as-Code platform for infrastructure and deployment");
+var rootCommand = new RootCommand("Deskribe - intent-as-code: provision resources and deploy workloads from deskribe.json");
 rootCommand.AddGlobalOption(pluginsDirOption);
+rootCommand.AddGlobalOption(verboseOption);
+foreach (var command in Commands.CreateAll(engine))
+    rootCommand.AddCommand(command);
 
-rootCommand.AddCommand(ValidateCommand.Create(engine));
-rootCommand.AddCommand(PlanCommand.Create(engine));
-rootCommand.AddCommand(ApplyCommand.Create(engine));
-rootCommand.AddCommand(DestroyCommand.Create(engine));
-rootCommand.AddCommand(GenerateCommand.Create(engine));
-
-var exitCode = await rootCommand.InvokeAsync(args);
-
-// Ensure a failure signaled via Environment.ExitCode inside a handler is never
-// overwritten by a zero return code from the invocation pipeline.
-if (exitCode == 0 && Environment.ExitCode != 0)
-    exitCode = Environment.ExitCode;
-
-return exitCode;
+return await rootCommand.InvokeAsync(args);

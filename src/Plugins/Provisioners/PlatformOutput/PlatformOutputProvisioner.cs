@@ -9,22 +9,17 @@ public partial class PlatformOutputProvisioner : IProvisioner
 {
     public string Name => "platform-output";
 
-    public Task<ProvisionResult> ApplyAsync(DeskribePlan plan, CancellationToken ct)
-    {
-        Console.WriteLine($"[platform-output] This is an output-only provisioner. Run the generated artifacts through your platform tooling (e.g., Terraform).");
+    public Task<ProvisionResult> ApplyAsync(ProvisionContext ctx, CancellationToken ct = default) =>
+        Task.FromResult(new ProvisionResult { Success = true });
 
-        return Task.FromResult(new ProvisionResult
-        {
-            Success = true,
-            Errors = ["platform-output is an output-only provisioner. Infrastructure must be applied externally."]
-        });
-    }
+    public Task<ProvisionResult> DestroyAsync(ProvisionContext ctx, CancellationToken ct = default) =>
+        Task.FromResult(new ProvisionResult { Success = true });
 
-    public Task<ArtifactResult> GenerateArtifactsAsync(DeskribePlan plan, string outputDir, CancellationToken ct)
+    public Task<ArtifactResult> GenerateArtifactsAsync(ProvisionContext ctx, string outputDir, CancellationToken ct = default)
     {
         var files = new List<GeneratedFile>();
 
-        if (!plan.Platform.ProvisionerConfigs.TryGetValue("platform-output", out var rawConfig))
+        if (!ctx.Config.Any())
         {
             return Task.FromResult(new ArtifactResult
             {
@@ -33,80 +28,86 @@ public partial class PlatformOutputProvisioner : IProvisioner
             });
         }
 
-        var config = DeserializeConfig(rawConfig);
-
-        var contextTokens = new Dictionary<string, string>
+        PlatformOutputProvisionerConfig config;
+        try
         {
-            ["app"] = plan.AppName,
-            ["env"] = plan.Environment,
-            ["team"] = plan.Team ?? "default",
-            ["org"] = plan.Platform.Organization ?? "default"
+            config = DeserializeConfig(ctx.Config);
+        }
+        catch (JsonException ex)
+        {
+            return Task.FromResult(new ArtifactResult
+            {
+                Success = false,
+                Errors = [$"Invalid 'platform-output' configuration: {ex.Message}"]
+            });
+        }
+
+        var contextTokens = new Dictionary<string, object?>
+        {
+            ["app"] = ctx.AppName,
+            ["env"] = ctx.Environment,
+            ["team"] = ctx.Team ?? "default",
+            ["org"] = ctx.Platform.Organization ?? "default"
         };
 
-        var basePath = ResolveTemplate(config.BasePath, contextTokens);
+        var basePath = ResolveTemplate(config.BasePath, contextTokens)?.ToString() ?? "";
+        var perType = ctx.Resources.GroupBy(r => r.ResourceType).ToDictionary(g => g.Key, g => g.Count());
 
-        foreach (var rp in plan.ResourcePlans)
+        foreach (var rp in ctx.Resources)
         {
-            var resourceKey = rp.ResourceType.Replace(".", "_");
+            var typeKey = rp.ResourceType.Replace(".", "_");
 
             if (!config.Modules.TryGetValue(rp.ResourceType, out var moduleConfig)
-                && !config.Modules.TryGetValue(resourceKey, out moduleConfig))
+                && !config.Modules.TryGetValue(typeKey, out moduleConfig))
             {
                 continue;
             }
 
-            // Build resource-specific tokens from configuration
-            var resourceTokens = new Dictionary<string, string>(contextTokens);
+            var resourceTokens = new Dictionary<string, object?>(contextTokens) { ["key"] = rp.ResourceKey };
             foreach (var (key, value) in rp.Configuration)
-            {
-                resourceTokens[key] = value?.ToString() ?? "";
-            }
+                resourceTokens[key] = value;
 
-            // Add size from resource plans if available
-            if (rp.Configuration.TryGetValue("size", out var sizeVal))
-                resourceTokens["size"] = sizeVal?.ToString() ?? "";
-
-            var resolvedMappings = new Dictionary<string, object>();
+            var resolvedMappings = new Dictionary<string, object?>();
             foreach (var (targetField, template) in moduleConfig.Mappings)
-            {
                 resolvedMappings[targetField] = ResolveTemplate(template, resourceTokens);
-            }
 
-            var filePath = Path.Combine(outputDir, basePath, moduleConfig.ModuleName, moduleConfig.FileName);
-            var content = JsonSerializer.Serialize(resolvedMappings, new JsonSerializerOptions { WriteIndented = true });
-
+            var fileName = perType[rp.ResourceType] > 1
+                ? $"{rp.ResourceKey}.{moduleConfig.FileName}"
+                : moduleConfig.FileName;
             files.Add(new GeneratedFile
             {
-                Path = filePath,
-                Content = content,
+                Path = Path.Combine(outputDir, basePath, moduleConfig.ModuleName, fileName),
+                Content = JsonSerializer.Serialize(resolvedMappings, new JsonSerializerOptions { WriteIndented = true }),
                 Format = "json"
             });
         }
 
-        return Task.FromResult(new ArtifactResult
-        {
-            Success = true,
-            Files = files
-        });
+        return Task.FromResult(new ArtifactResult { Success = true, Files = files });
     }
 
-    public Task DestroyAsync(string appName, string environment, PlatformConfig platform, CancellationToken ct)
+    private static PlatformOutputProvisionerConfig DeserializeConfig(IReadOnlyDictionary<string, JsonElement> rawConfig)
     {
-        Console.WriteLine($"[platform-output] Destroy is a no-op for output-only provisioner. Remove the generated files from your platform repo manually.");
-        return Task.CompletedTask;
-    }
-
-    private static PlatformOutputProvisionerConfig DeserializeConfig(Dictionary<string, JsonElement> rawConfig)
-    {
-        var json = JsonSerializer.Serialize(rawConfig);
+        var json = JsonSerializer.Serialize(rawConfig.ToDictionary(kv => kv.Key, kv => kv.Value));
         return JsonSerializer.Deserialize<PlatformOutputProvisionerConfig>(json, new JsonSerializerOptions
         {
             PropertyNameCaseInsensitive = true
         }) ?? new PlatformOutputProvisionerConfig();
     }
 
-    internal static string ResolveTemplate(string template, Dictionary<string, string> tokens)
+    /// <summary>
+    /// Resolves a template. When the template is exactly one plain <c>{token}</c> the token's
+    /// underlying value is returned (bool, number, ...); mixed templates always yield strings.
+    /// </summary>
+    internal static object? ResolveTemplate(string template, Dictionary<string, object?> tokens)
     {
+        var whole = MapExpressionRegex().Match(template);
+        if (whole.Success && whole.Length == template.Length
+            && string.IsNullOrEmpty(whole.Groups[2].Value)
+            && tokens.TryGetValue(whole.Groups[1].Value, out var typed))
+        {
+            return typed is JsonElement je ? FromJson(je) : typed;
+        }
+
         return MapExpressionRegex().Replace(template, match =>
         {
             var field = match.Groups[1].Value;
@@ -115,14 +116,36 @@ public partial class PlatformOutputProvisioner : IProvisioner
             // Handle {field:map(a=x,b=y)} syntax
             if (!string.IsNullOrEmpty(mapExpr))
             {
-                var fieldValue = tokens.GetValueOrDefault(field, "");
+                var fieldValue = TokenText(tokens, field) ?? "";
                 var mappings = ParseMapExpression(mapExpr);
                 return mappings.GetValueOrDefault(fieldValue, fieldValue);
             }
 
-            // Simple {field} replacement
-            return tokens.GetValueOrDefault(field, match.Value);
+            return TokenText(tokens, field) ?? match.Value;
         });
+    }
+
+    private static object? FromJson(JsonElement e) => e.ValueKind switch
+    {
+        JsonValueKind.True => true,
+        JsonValueKind.False => false,
+        JsonValueKind.String => e.GetString(),
+        JsonValueKind.Null => null,
+        _ => e
+    };
+
+    private static string? TokenText(Dictionary<string, object?> tokens, string field)
+    {
+        if (!tokens.TryGetValue(field, out var v)) return null;
+        return v switch
+        {
+            null => "",
+            bool b => b ? "true" : "false",
+            string s => s,
+            IFormattable f => f.ToString(null, System.Globalization.CultureInfo.InvariantCulture),
+            JsonElement { ValueKind: JsonValueKind.String } je => je.GetString(),
+            _ => JsonSerializer.Serialize(v)
+        };
     }
 
     private static Dictionary<string, string> ParseMapExpression(string mapExpr)

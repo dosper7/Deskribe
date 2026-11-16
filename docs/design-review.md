@@ -1,5 +1,12 @@
 # Design Review — Deskribe (2026-11)
 
+> **Note (added after the later redesign).** This report is kept as written. Since it was written, the engine and the Kubernetes plugin were redesigned so that Deskribe really deploys. For current behaviour see the [system design](system-design.md) and the [configuration reference](configuration-reference.md).
+>
+> Addressed by the redesign: A (multi-service manifests: one workload per service); B (the file layout and manifest rendering belong to the runtime plugin); E (`DeskribeAspireOptions` makes the developer tools and persistent containers configurable); finding 8 (there is no default image; a workload without one is an error); finding 12 (the Terraform provisioner now runs the Terraform CLI; it no longer emits Helm values); C in part (`sealed-secrets` was removed; the strategies are a closed set, `opaque` and `external-secrets`); D in part (labels are constants in one place but still fixed, and the ExternalSecret API version is fixed at `v1beta1`).
+>
+> Still open: F, G, I, J, K, and H (the Blazor WebAssembly client `Deskribe.Web.Client` no longer exists, so its same-origin point is moot). L was not re-assessed. Statements in the report that are no longer true: class names `ResourceReferenceResolver` and `PolicyValidator` are now `ResourceReferences` and `ManifestValidator`; finding 6 (plugin DLL load failures are logged) does not hold for the hosts today, where a DLL that fails to load is skipped silently; the finding 12 fix text (an error directing users to `generate`) was superseded as above; and `Deskribe:ManifestPath` in `appsettings.json` (finding 19) does not resolve correctly (see the [Aspire guide](aspire-integration.md)).
+
+
 A design review and fix pass over the full repository: engine, plugins, CLI, web UI, samples, and docs. This report summarizes the method, the findings, what was fixed, and what remains as recommendations.
 
 ---

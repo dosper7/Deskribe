@@ -6,6 +6,7 @@ using Deskribe.Core;
 using Deskribe.Core.Plugins;
 using Deskribe.Plugins.Provisioner.PlatformOutput;
 using Deskribe.Plugins.Provisioner.Pulumi;
+using Deskribe.Plugins.Provisioner.Static;
 using Deskribe.Plugins.Provisioner.Terraform;
 using Deskribe.Plugins.Resources.Kafka;
 using Deskribe.Plugins.Resources.Postgres;
@@ -28,6 +29,7 @@ var builtInAssemblies = new Assembly[]
     typeof(TerraformPlugin).Assembly,
     typeof(KubernetesPlugin).Assembly,
     typeof(PlatformOutputPlugin).Assembly,
+    typeof(StaticPlugin).Assembly,
 };
 
 var pluginsDir = builder.Configuration.GetValue<string>("Deskribe:PluginsDir")

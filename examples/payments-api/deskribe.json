@@ -2,8 +2,14 @@
   "name": "payments-api",
   "team": "mobile-replenishment",
   "resources": [
-    { "type": "postgres", "size": "m", "version": "16" },
-    { "type": "redis" },
+    {
+      "type": "postgres",
+      "size": "m",
+      "version": "16"
+    },
+    {
+      "type": "redis"
+    },
     {
       "type": "kafka.messaging",
       "topics": [
@@ -11,8 +17,13 @@
           "name": "payments.transactions",
           "partitions": 6,
           "retentionHours": 168,
-          "owners": ["team-payments"],
-          "consumers": ["team-fraud", "team-notifications"]
+          "owners": [
+            "team-payments"
+          ],
+          "consumers": [
+            "team-fraud",
+            "team-notifications"
+          ]
         }
       ]
     }
@@ -22,11 +33,19 @@
       "env": {
         "ConnectionStrings__Postgres": "@resource(postgres).connectionString",
         "Redis__Endpoint": "@resource(redis).endpoint",
-        "Kafka__BootstrapServers": "@resource(kafka.messaging).endpoint"
+        "Kafka__BootstrapServers": "@resource(kafka.messaging).bootstrapServers"
       },
       "overrides": {
-        "dev": { "replicas": 2, "cpu": "250m", "memory": "512Mi" },
-        "prod": { "replicas": 3, "cpu": "500m", "memory": "1Gi" }
+        "dev": {
+          "replicas": 2,
+          "cpu": "250m",
+          "memory": "512Mi"
+        },
+        "prod": {
+          "replicas": 3,
+          "cpu": "500m",
+          "memory": "1Gi"
+        }
       }
     }
   ]
