@@ -252,20 +252,77 @@ public class RenderingTests
         await Assert.ThrowsAsync<InvalidOperationException>(() => _plugin.RenderAsync(Context([Workload(name)])));
     }
 
+    private static Dictionary<object, object> TemplateAnnotations(List<Dictionary<object, object>> docs, string workload = "api") =>
+        (Dictionary<object, object>)Path(Doc(docs, "Deployment", workload), "spec.template.metadata.annotations")!;
+
     [Fact]
-    public async Task EnvHash_ChangesWithPlainAndSecretValues_AndIsStable()
+    public async Task EnvHash_ChangesWithPlainEnvAndSecretLayout_AndIsStable()
     {
-        static string Hash(List<Dictionary<object, object>> docs) =>
-            (string)((Dictionary<object, object>)Path(Doc(docs, "Deployment", "api"), "spec.template.metadata.annotations")!)["deskribe.dev/env-hash"];
+        static string Hash(List<Dictionary<object, object>> docs) => (string)TemplateAnnotations(docs)["deskribe.dev/env-hash"];
 
         var baseline = Hash(await Render(Context()));
         Assert.Equal(baseline, Hash(await Render(Context())));
 
-        var secretChanged = Hash(await Render(Context([Workload(env: new() { ["LOG_LEVEL"] = "debug", ["ConnectionStrings__Postgres"] = "other" })])));
         var plainChanged = Hash(await Render(Context([Workload(env: new() { ["LOG_LEVEL"] = "info", ["ConnectionStrings__Postgres"] = "Host=pg;Database=orders;Token=tok-abc-42" })])));
-        Assert.NotEqual(baseline, secretChanged);
-        Assert.NotEqual(baseline, plainChanged);
-        Assert.NotEqual(secretChanged, plainChanged);
+        var keyAdded = Hash(await Render(Context([Workload(env: new() { ["LOG_LEVEL"] = "debug", ["ConnectionStrings__Postgres"] = "x", ["Other"] = "y" },
+            secretKeys: ["ConnectionStrings__Postgres", "Other"])])));
+        var strategyChanged = Hash(await Render(Context([Workload(strategy: SecretsStrategies.ExternalSecrets)])));
+        Assert.Equal(4, new[] { baseline, plainChanged, keyAdded, strategyChanged }.Distinct().Count());
+    }
+
+    [Theory]
+    [InlineData("other")]
+    [InlineData("")]
+    [InlineData("Host=pg;Database=orders;Token=tok-abc-43")]
+    public async Task RenderedManifests_ExceptTheSecret_DoNotDependOnSecretValues(string otherValue)
+    {
+        var baseline = (await _plugin.RenderAsync(Context())).Yaml;
+        var changed = (await _plugin.RenderAsync(Context([Workload(env: new() { ["LOG_LEVEL"] = "debug", ["ConnectionStrings__Postgres"] = otherValue })]))).Yaml;
+
+        static string WithoutSecret(string yaml) =>
+            string.Join("---\n", yaml.Split("---\n").Where(doc => !doc.Contains("\nkind: Secret\n", StringComparison.Ordinal)));
+        Assert.NotEqual(baseline, changed);
+        Assert.Equal(WithoutSecret(baseline), WithoutSecret(changed));
+        Assert.Equal(["deskribe.dev/env-hash"], TemplateAnnotations(ParseYaml(changed)).Keys.Cast<string>());
+    }
+
+    [Fact]
+    public async Task GeneratedArtifacts_DoNotDependOnExternalSecretValues()
+    {
+        const string dir = "out";
+        RuntimeContext Ctx(string value) => Context([Workload(env: new() { ["LOG_LEVEL"] = "debug", ["TOKEN"] = value }, secretKeys: ["TOKEN"], strategy: SecretsStrategies.ExternalSecrets)]);
+        var a = await _plugin.GenerateArtifactsAsync(Ctx("one"), dir);
+        var b = await _plugin.GenerateArtifactsAsync(Ctx("two"), dir);
+        Assert.Equal(a.Select(f => (f.Path, f.Content)), b.Select(f => (f.Path, f.Content)));
+    }
+
+    [Theory]
+    [InlineData("api\n")]
+    [InlineData("payments-api\n")]
+    public async Task WorkloadName_WithTrailingNewline_IsRejected(string name)
+    {
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _plugin.RenderAsync(Context([Workload(name)])));
+    }
+
+    [Theory]
+    [InlineData("namespace")]
+    [InlineData("app")]
+    [InlineData("environment")]
+    [InlineData("team")]
+    [InlineData("secretKey")]
+    [InlineData("portName")]
+    public async Task OtherNames_WithTrailingNewline_AreRejected(string which)
+    {
+        var ctx = which switch
+        {
+            "namespace" => Context(ns: "orders-dev\n", workloads: [Workload(ns: "orders-dev\n")]),
+            "app" => Context(app: "orders\n"),
+            "environment" => Context(environment: "dev\n"),
+            "team" => Context(team: "payments\n"),
+            "secretKey" => Context([Workload(env: new() { ["TOKEN\n"] = "x" }, secretKeys: ["TOKEN\n"])]),
+            _ => Context(config: new() { ["portName"] = "http\n" })
+        };
+        await Assert.ThrowsAsync<InvalidOperationException>(() => _plugin.RenderAsync(ctx));
     }
 
     [Fact]

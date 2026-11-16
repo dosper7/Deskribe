@@ -48,10 +48,11 @@ Plan never contacts a provisioner or the runtime.
 
 1. Fail if any workload has no image. This happens before anything is provisioned.
 2. Group the planned resources by the provisioner the platform maps their type to. A type with no mapping, or a provisioner that is not registered, is an error.
-3. Call `ApplyAsync` on each provisioner once with its resources. A failed result stops the operation. Outputs are collected as `resourceKey -> output -> value`.
-4. Resolve every workload's env values with those outputs. An unresolved reference is an error listing all of them, except a sensitive variable under `external-secrets`, whose value the cluster pulls from the store.
-5. Call the runtime's `ApplyAsync` with the resolved workloads. Non-Deskribe exceptions from the runtime are wrapped as `Runtime 'kubernetes' failed to deploy: ...`.
-6. Return the namespace and the lists of applied and pruned objects. The result never carries resolved values.
+3. Call the runtime's `RenderAsync` with the workloads, references still unresolved, and discard the result. The runtime rejects here what it could not deploy (workload names, `runtime.config` values, secret variable names), so nothing is provisioned for a deployment that cannot succeed.
+4. Call `ApplyAsync` on each provisioner once with its resources. A failed result stops the operation. Outputs are collected as `resourceKey -> output -> value`.
+5. Resolve every workload's env values with those outputs. An unresolved reference is an error listing all of them, except a sensitive variable under `external-secrets`, whose value the cluster pulls from the store.
+6. Call the runtime's `ApplyAsync` with the resolved workloads. Non-Deskribe exceptions from the runtime are wrapped as `Runtime 'kubernetes' failed to deploy: ...`.
+7. Return the namespace and the lists of applied and pruned objects. The result never carries resolved values.
 
 There is no rollback. If provisioning succeeded and the rollout fails, the infrastructure stays and the failed rollout is reported. Applying again is safe because every step is idempotent.
 
@@ -99,7 +100,7 @@ A variable is classed as sensitive if any of the references in its value is. Val
 Per workload, in this order: the Secret or ExternalSecret `<workload>-env` (only if the workload has sensitive variables), the Service `<workload>`, the Deployment `<workload>`. Optionally a Namespace first.
 
 - Deployment: `replicas` from the workload; one container named after the workload with the image, one named port, CPU and memory as both requests and limits, plain env vars inline sorted by name, `envFrom` the `<workload>-env` Secret when there are sensitive variables, and a readiness probe when `healthPath` is set.
-- The pod template carries the annotation `deskribe.dev/env-hash`, a SHA-256 of the plain env values and of the secret values (or the remote keys, under `external-secrets`). A changed value changes the hash, which triggers a rollout even though the Secret is not part of the pod spec.
+- The pod template carries two annotations that trigger a rollout when configuration changes. `deskribe.dev/env-hash` is a SHA-256 of the plain env values and of the names and delivery strategy of the secret variables; it never covers secret values. `deskribe.dev/secret-version` is set at apply time, under `opaque`, to the `resourceVersion` of the Secret just applied, so a changed secret value rolls the pods and an unchanged re-apply does not. A change made to that Secret by anyone else also rolls the pods on the next apply.
 - There is no default image. A workload without one fails rendering.
 
 ### Labels
@@ -118,9 +119,10 @@ The Deployment and Service selectors use only `deskribe.dev/app` and `app.kubern
 
 1. Read the settings from `runtime.config`; render all objects. Names, label values and Secret keys are validated first.
 2. Make sure the namespace exists. It is created, with the owner annotation, only if `createNamespace` is `true`. A namespace that is being deleted is an error. If the namespace is missing and `createNamespace` is `false`, apply fails.
-3. Apply each object with Kubernetes server-side apply (field manager `deskribe`, force). Objects are patched, not replaced, so applying twice is a no-op.
-4. Wait for every Deployment to roll out: observed generation current, all replicas updated and available, no old replicas left. It polls every 2 seconds up to `rolloutTimeoutSeconds`. It fails early when the Deployment reports `ProgressDeadlineExceeded`, when a pod's image name is invalid or `ErrImageNeverPull`, or when image pulls have been failing for 20 seconds. The error names the workload and includes replica counts, conditions, container waiting/terminated reasons and recent warning events of the new pods.
-5. Only after every rollout succeeded, prune: delete Deployments, Services, ExternalSecrets, and Secrets that carry the labels `managed-by=deskribe`, `deskribe.dev/app=<app>` and `deskribe.dev/environment=<env>` in the namespace and are not in the set just applied. Secrets owned by another object (those an ExternalSecret created) are left to garbage collection. A failed rollout therefore prunes nothing and the old Secret stays until the new pods are running.
+3. If a workload now uses `opaque` but an ExternalSecret from an earlier `external-secrets` deployment still targets its Secret, delete that ExternalSecret with orphan propagation and wait until it is gone, so the Secret is not garbage-collected with it. Apply fails here, before changing anything, if the Secret has an owner Deskribe does not manage.
+4. Apply each object with Kubernetes server-side apply (field manager `deskribe`, force). Objects are patched, not replaced, so applying twice is a no-op.
+5. Wait for every Deployment to roll out: observed generation current, all replicas updated and available, no old replicas left. It polls every 2 seconds up to `rolloutTimeoutSeconds`. It fails early when the Deployment reports `ProgressDeadlineExceeded`, when a pod's image name is invalid or `ErrImageNeverPull`, or when image pulls have been failing for 20 seconds. The error names the workload and includes replica counts, conditions, container waiting/terminated reasons and recent warning events of the new pods.
+6. Only after every rollout succeeded, prune: delete Deployments, Services, ExternalSecrets, and Secrets that carry the labels `managed-by=deskribe`, `deskribe.dev/app=<app>` and `deskribe.dev/environment=<env>` in the namespace and are not in the set just applied. Secrets owned by another object (those an ExternalSecret created) are left to garbage collection, and a Secret that a declared ExternalSecret targets is never pruned: after a switch from `opaque` to `external-secrets` the old Secret stays for the operator to take over. A failed rollout therefore prunes nothing and the old Secret stays until the new pods are running.
 
 Server-side apply with force means Deskribe wins field conflicts. It always sets `replicas`, so an autoscaler that changes replicas will be reset on the next apply.
 
@@ -155,7 +157,7 @@ Deployments created by the previous version of the plugin are not migrated. They
 
 ## State
 
-Deskribe has no database, state file, or lock of its own.
+Deskribe has no database or state file of its own.
 
 | What | Where it lives |
 |---|---|
@@ -164,7 +166,7 @@ Deskribe has no database, state file, or lock of its own.
 | Which version was last applied | Not tracked. The Deployment's image and the `deskribe.dev/env-hash` annotation are all that remain |
 | Resolved secret values | Not kept. Under `opaque` they exist only inside the cluster Secret |
 
-Consequences: two concurrent `apply` runs for the same app and environment are not coordinated by Deskribe (the CI workflow uses a concurrency group for this); `destroy` of an environment relies on the provisioner's state to know what to remove; nothing records drift or history.
+Consequences: two concurrent `apply` runs for the same app and environment are not coordinated by Deskribe (the CI workflow uses a concurrency group for this), except that the Terraform provisioner serialises its operations per working directory with a file lock; `destroy` of an environment relies on the provisioner's state to know what to remove; nothing records drift or history.
 
 ## Dashboard
 

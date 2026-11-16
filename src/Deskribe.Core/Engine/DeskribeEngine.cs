@@ -128,6 +128,11 @@ public class DeskribeEngine
         var runtime = RequireRuntime(plan.Platform);
         var groups = GroupByProvisioner(plan.Platform, plan.ResourcePlans);
 
+        // Let the runtime reject what it cannot deploy (names, runtime settings) before any
+        // infrastructure is created. References are still unresolved here, so no values are involved.
+        await CallRuntimeAsync(runtime, "accept the deployment",
+            () => runtime.RenderAsync(CreateRuntimeContext(plan, plan.Workloads), ct));
+
         var outputs = new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal);
         foreach (var group in groups)
         {

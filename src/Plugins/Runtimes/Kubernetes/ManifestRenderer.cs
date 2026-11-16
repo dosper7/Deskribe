@@ -122,7 +122,9 @@ internal static class ManifestRenderer
                     if (!workload.EnvironmentVariables.TryGetValue(key, out var value))
                         throw new InvalidOperationException($"Workload '{workload.Name}': secret variable '{key}' has no value.");
                     data[key] = Encoding.UTF8.GetBytes(value);
-                    hashInput[$"secret:{key}"] = value;
+                    // Only the key: the value must not influence anything readable outside the Secret.
+                    // Value changes roll the pods through the Secret's resourceVersion, stamped at apply time.
+                    hashInput[$"secret:{key}"] = SecretsStrategies.Opaque;
                 }
 
                 var secret = new V1Secret

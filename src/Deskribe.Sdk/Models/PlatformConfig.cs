@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 
 namespace Deskribe.Sdk.Models;
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PlatformConfig
 {
     [JsonPropertyName("organization")]
@@ -75,6 +76,7 @@ public sealed record PlatformDefaults
 
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record PlatformPolicies
 {
     [JsonPropertyName("allowedRegions")]
@@ -88,6 +90,7 @@ public sealed record PlatformPolicies
     public WorkloadLimits Limits { get; init; } = new();
 }
 
+[JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
 public sealed record WorkloadLimits
 {
     [JsonPropertyName("maxReplicas")]

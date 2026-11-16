@@ -79,7 +79,7 @@ public class GenerateTests : IDisposable
     {
         var ex = await Assert.ThrowsAsync<DeskribeException>(() => _h.GenerateAsync(images: Images));
         Assert.Contains("@resource(redis).endpoint", ex.Message);
-        Assert.Contains("outputsPath", ex.Message);
+        Assert.Contains("--outputs", ex.Message);
     }
 
     [Fact]

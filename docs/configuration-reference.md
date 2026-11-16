@@ -60,7 +60,7 @@ The resource key is `name` when set, otherwise `type`. Keys may contain letters,
 | `env` | map string to string | Environment variables. A value may contain `@resource(key).output` references mixed with literal text |
 | `overrides` | map env name to object | Per-environment `replicas` (integer), `cpu`, `memory`. Every key must be an environment the platform defines |
 
-The workload name is the app name when the manifest has exactly one service, otherwise `<app>-<service>`. The name must be a DNS-1123 label, and the Kubernetes runtime additionally requires it to start with a letter.
+The workload name is the app name when the manifest has exactly one service, otherwise `<app>-<service>`. The name must be lowercase letters, digits and `-`, start with a letter, end with a letter or digit, and be at most 63 characters.
 
 Sizing for a workload is the override for the target environment, else the effective platform default (see [merging](#how-values-are-merged)). There is no image in the manifest: supply `--image name=image:tag`, where `name` is the service name or the workload name. With exactly one service and exactly one `--image`, the key does not matter. The CLI requires the `name=` part.
 
@@ -153,7 +153,7 @@ Two layouts, chosen by the path passed to `--platform`:
 - A directory containing `base.json` and `envs/<env>.json`. The environments are the file names in `envs/`.
 - A single `.json` file whose `environments` map holds the per-environment objects.
 
-An environment must be defined for `--env` to be accepted. Unlike the manifest, the platform config is read leniently: unknown properties are silently ignored, so a misspelt key has no effect and no error.
+An environment must be defined for `--env` to be accepted. Unknown properties are rejected at the top level of the platform config and inside `policies` and `policies.limits`, so a misspelt policy key is an error rather than a silently disabled rule. Inside `defaults`, `runtime` and the environment objects, unknown properties are still ignored.
 
 ```json
 {
@@ -284,8 +284,11 @@ Runs the Terraform CLI in the platform team's root module.
 | `binary` | `terraform` | Executable to run |
 | `workspace` | `{app}-{env}` | Workspace name. Tokens `{app}`, `{env}`, `{team}` |
 | `outputName` | `deskribe_outputs` | Name of the Terraform output Deskribe reads |
+| `lockTimeoutSeconds` | `1800` | How long to wait for another Deskribe Terraform operation on the same `workingDir` before failing. `0` fails immediately when the directory is busy |
 
 `apply` runs `init -input=false`, `workspace select -or-create=true <workspace>`, `apply -auto-approve -input=false -var-file=<temp file>`, then `output -json`. `destroy` runs the same first two steps and `destroy -auto-approve`. The variable file is written to the system temp directory and deleted afterwards. A failing step stops the sequence and its stderr (the last 4000 characters) is the error.
+
+Terraform keeps the selected workspace inside the working directory, so Deskribe runs one operation per `workingDir` at a time: each `apply` or `destroy` holds an exclusive lock for its whole sequence, within one process and across processes that share the directory. The lock is an operating-system file lock on an empty `.deskribe-terraform.lock` file that Deskribe creates in `workingDir` and never deletes; it is released when the operation ends or the process dies. It does not protect against Terraform being run in that directory by hand or by another tool, and file locks may be unreliable on some network file systems.
 
 The root module must declare these variables: `app_name`, `environment`, `region`, `team`, `resources`. `resources` is a map from resource key to `{ type, config }`, where `config` is the plan above (see `terraform.tfvars.json` below).
 
@@ -364,7 +367,7 @@ The example platform config does not map any resource type to `platform-output`,
 
 **Names**
 
-- The app name, the team, the resolved namespace and every workload name are DNS-1123 labels.
+- The app name, the team and the resolved namespace are DNS-1123 labels. Every workload name is additionally required to start with a letter.
 
 **Resources**
 
@@ -398,8 +401,8 @@ The example platform config does not map any resource type to `platform-output`,
 ## Limitations
 
 - `policies.enforceTLS` is not enforced.
-- `validate` and `plan` check the manifest and the platform's policies. They do not check `runtime.config`, provisioner settings or whether a Pulumi `projectDir` or Terraform `workingDir` exists. Those are found when the plugin runs. An invalid `runtime.config` value fails `generate`, `apply` and `status` with `Runtime 'kubernetes' failed to ...: Invalid Kubernetes runtime setting ...`.
-- Platform config typos are not detected (see above).
+- `validate` and `plan` check the manifest and the platform's policies. They do not check `runtime.config`, provisioner settings or whether a Pulumi `projectDir` or Terraform `workingDir` exists. An invalid `runtime.config` value fails `generate`, `apply` and `status` with `Runtime 'kubernetes' failed to ...: Invalid Kubernetes runtime setting ...`; `apply` asks the runtime to render the deployment first, so this happens before any provisioner runs. Provisioner settings are found when the provisioner runs.
+- Typos inside the platform config's `defaults`, `runtime` and environment objects are not detected (see above).
 - A manifest with `overrides` for an environment the platform does not define fails validation for every environment, not only the one named.
 - `defaults.runtime` and `alertRouting` are accepted and unused.
 - Pulumi and Terraform have been tested only with a mocked runner and a fake binary, not against real infrastructure.

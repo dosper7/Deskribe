@@ -31,7 +31,7 @@ platform-config/
 
 Each `envs/<name>.json` can override any `defaults` field, and the file's `name` is what developers pass as `--env`. An environment that has no file does not exist: `--env` with an unknown name is an error that lists the known ones. `examples/platform-config` is a complete directory.
 
-Nothing checks the platform config's own spelling. An unknown key, such as `enforceTls` for `enforceTLS`, is ignored without a message, so run `validate` and `plan` against it in the platform repository's CI (as `ci` does in the [shipped workflow](cicd-integration.md)).
+Unknown keys are rejected at the top level and inside `policies` and `policies.limits`, so a misspelt policy fails loudly. Elsewhere (`defaults`, `runtime`, the environment files) an unknown key is ignored without a message, so run `validate` and `plan` against it in the platform repository's CI (as `ci` does in the [shipped workflow](cicd-integration.md)).
 
 ## Choosing a provisioner per resource type
 

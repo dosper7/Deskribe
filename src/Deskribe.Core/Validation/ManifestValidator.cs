@@ -120,8 +120,8 @@ public class ManifestValidator
             var workloadName = MergeEngine.GetWorkloadName(manifest, service);
             var label = workloadName is not null ? $"Workload '{workloadName}'" : $"Service #{i + 1}";
 
-            if (workloadName is not null)
-                CheckLabel(errors, label + " name", workloadName);
+            if (workloadName is not null && !DnsLabel.IsValidObjectName(workloadName))
+                errors.Add($"{label} name is not a valid workload name (lowercase letters, digits and '-', starting with a letter and ending with a letter or digit, at most {DnsLabel.MaxLength} characters).");
 
             foreach (var envKey in service.Overrides.Keys)
             {

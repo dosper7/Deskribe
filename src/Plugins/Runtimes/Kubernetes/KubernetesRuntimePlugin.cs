@@ -111,12 +111,24 @@ public class KubernetesRuntimePlugin : IRuntimePlugin
         using var client = CreateClient();
 
         var applied = new List<string>();
+        var pruned = new List<string>();
         if (await EnsureNamespaceAsync(client, ctx, settings, ct))
             applied.Add($"Namespace/{ctx.Namespace}");
 
+        // A workload that moved from external-secrets to opaque: detach its Secret from the old ExternalSecret
+        // before writing it, so the operator stops managing it and the garbage collector cannot delete it.
+        foreach (var secret in rendered.Objects.Where(o => o.Kind == "Secret"))
+            await ReleaseFromExternalSecretAsync(client, ctx, secret.Name, pruned, ct);
+
+        var secretVersions = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var obj in rendered.Objects)
         {
-            await ApplyObjectAsync(client, obj, ct);
+            if (obj.Body is V1Deployment deployment)
+                StampSecretVersion(deployment, secretVersions);
+
+            var result = await ApplyObjectAsync(client, obj, ct);
+            if (result is V1Secret { Metadata.ResourceVersion: { } resourceVersion })
+                secretVersions[obj.Name] = resourceVersion;
             applied.Add(obj.Id);
             Log?.WriteLine($"[kubernetes] applied {obj.Id}");
         }
@@ -126,7 +138,7 @@ public class KubernetesRuntimePlugin : IRuntimePlugin
 
         // Prune only after a successful rollout so the previous pods keep their Secret until they are replaced.
         var keep = rendered.Objects.Select(o => o.Id).ToHashSet(StringComparer.Ordinal);
-        var pruned = await PruneAsync(client, ctx, keep, ct);
+        pruned.AddRange(await PruneAsync(client, ctx, keep, ct));
 
         return new RuntimeApplyResult { Namespace = ctx.Namespace, Applied = applied, Pruned = pruned };
     }
@@ -253,31 +265,179 @@ public class KubernetesRuntimePlugin : IRuntimePlugin
         }
     }
 
-    private static async Task ApplyObjectAsync(IKubernetes client, ManifestObject obj, CancellationToken ct)
+    /// <summary>
+    /// Points the pod template at the current <c>resourceVersion</c> of the opaque Secret it reads, so a changed
+    /// secret value rolls the pods without anything derived from the values appearing outside the Secret.
+    /// Server-side apply of unchanged content keeps the resourceVersion, so an unchanged re-apply does not roll.
+    /// </summary>
+    private static void StampSecretVersion(V1Deployment deployment, IReadOnlyDictionary<string, string> secretVersions)
+    {
+        var template = deployment.Spec.Template;
+        var secretNames = template.Spec.Containers
+            .SelectMany(c => c.EnvFrom ?? [])
+            .Select(e => e.SecretRef?.Name)
+            .OfType<string>()
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        var versions = secretNames.Where(secretVersions.ContainsKey).Select(n => secretVersions[n]).ToList();
+        if (versions.Count == 0)
+            return;
+        template.Metadata.Annotations ??= new Dictionary<string, string>();
+        template.Metadata.Annotations[KubernetesLabels.SecretVersionAnnotation] = string.Join(",", versions);
+    }
+
+    /// <summary>
+    /// Before Deskribe writes the opaque Secret <paramref name="name"/>, removes this app's (now undeclared)
+    /// ExternalSecret of the same name with orphan propagation: the operator stops managing the Secret, and the
+    /// garbage collector strips the ownerReference instead of deleting the Secret, so it exists throughout.
+    /// Afterwards the Secret must have no owner left, otherwise it could be collected after Deskribe writes it.
+    /// </summary>
+    private async Task ReleaseFromExternalSecretAsync(IKubernetes client, RuntimeContext ctx, string name, List<string> pruned, CancellationToken ct)
+    {
+        var ns = ctx.Namespace;
+        var id = $"Secret/{ns}/{name}";
+        var externalSecretId = $"ExternalSecret/{ns}/{name}";
+        string? releasedUid = null;
+
+        var externalSecret = await ReadExternalSecretAsync(client, ns, name, ct);
+        if (externalSecret is { } es)
+        {
+            if (!IsManagedBy(es.Labels, ctx))
+                throw new InvalidOperationException(
+                    $"Cannot apply {id}: {externalSecretId} exists and was not deployed by Deskribe for '{ctx.AppName}' in '{ctx.Environment}', " +
+                    "so the External Secrets Operator would keep writing that Secret. Remove the ExternalSecret or rename the workload.");
+
+            releasedUid = es.Uid;
+            if (!es.Deleting)
+            {
+                try
+                {
+                    await client.CustomObjects.DeleteNamespacedCustomObjectAsync(
+                        ManifestRenderer.ExternalSecretGroup, ManifestRenderer.ExternalSecretVersion, ns, ManifestRenderer.ExternalSecretPlural, name,
+                        new V1DeleteOptions { PropagationPolicy = "Orphan", Preconditions = new V1Preconditions { Uid = es.Uid } }, cancellationToken: ct);
+                    pruned.Add(externalSecretId);
+                    Log?.WriteLine($"[kubernetes] deleted {externalSecretId} (orphaning {id})");
+                }
+                catch (HttpOperationException ex) when (ex.Response.StatusCode is HttpStatusCode.NotFound or HttpStatusCode.Conflict)
+                {
+                }
+            }
+
+            var deadline = DateTimeOffset.UtcNow + ExternalSecretDeletionTimeout;
+            while (await ReadExternalSecretAsync(client, ns, name, ct) is { } remaining && remaining.Uid == es.Uid)
+            {
+                if (DateTimeOffset.UtcNow >= deadline)
+                    throw new InvalidOperationException(
+                        $"Cannot apply {id}: {externalSecretId} is still being deleted after {(int)ExternalSecretDeletionTimeout.TotalSeconds}s" +
+                        $"{(remaining.Finalizers.Count > 0 ? $" (finalizers: {string.Join(", ", remaining.Finalizers)})" : "")}. Nothing was changed; apply again once it is gone.");
+                await Task.Delay(TimeSpan.FromMilliseconds(250), ct);
+            }
+        }
+
+        V1Secret secret;
+        try
+        {
+            secret = await client.CoreV1.ReadNamespacedSecretAsync(name, ns, cancellationToken: ct);
+        }
+        catch (HttpOperationException ex) when (ex.Response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return;
+        }
+
+        var owners = secret.Metadata.OwnerReferences ?? [];
+        if (owners.Count == 0)
+            return;
+
+        // The garbage collector normally removes the reference itself while orphaning; also drop references to an
+        // ExternalSecret that no longer exists, which would otherwise get the Secret collected.
+        var stale = new List<V1OwnerReference>();
+        var foreign = new List<V1OwnerReference>();
+        foreach (var owner in owners)
+        {
+            var isExternalSecret = owner.Kind == "ExternalSecret" && owner.ApiVersion.StartsWith(ManifestRenderer.ExternalSecretGroup + "/", StringComparison.Ordinal);
+            if (isExternalSecret && (owner.Uid == releasedUid || (owner.Name == name && await ReadExternalSecretAsync(client, ns, name, ct) is null)))
+                stale.Add(owner);
+            else
+                foreign.Add(owner);
+        }
+
+        if (foreign.Count > 0)
+            throw new InvalidOperationException(
+                $"Cannot apply {id}: it is owned by {string.Join(", ", foreign.Select(o => $"{o.Kind}/{o.Name}"))}, which Deskribe does not manage, " +
+                "and would be deleted together with its owner. Remove the owner or rename the workload.");
+
+        var patch = new
+        {
+            metadata = new
+            {
+                resourceVersion = secret.Metadata.ResourceVersion,
+                ownerReferences = stale.Select(o => new Dictionary<string, string> { ["$patch"] = "delete", ["uid"] = o.Uid }).ToList()
+            }
+        };
+        try
+        {
+            await client.CoreV1.PatchNamespacedSecretAsync(new V1Patch(patch, V1Patch.PatchType.StrategicMergePatch), name, ns, fieldManager: FieldManager, cancellationToken: ct);
+            Log?.WriteLine($"[kubernetes] removed owner reference from {id}");
+        }
+        catch (HttpOperationException ex)
+        {
+            throw new InvalidOperationException($"Failed to release {id} from {externalSecretId}: {Describe(ex, includeMessage: false)}", ex);
+        }
+    }
+
+    private static readonly TimeSpan ExternalSecretDeletionTimeout = TimeSpan.FromSeconds(60);
+
+    private sealed record ExternalSecretInfo(string Uid, IReadOnlyDictionary<string, string> Labels, bool Deleting, IReadOnlyList<string> Finalizers);
+
+    /// <returns>Null when the object, or the ExternalSecret resource itself, does not exist.</returns>
+    private static async Task<ExternalSecretInfo?> ReadExternalSecretAsync(IKubernetes client, string ns, string name, CancellationToken ct)
+    {
+        object result;
+        try
+        {
+            result = await client.CustomObjects.GetNamespacedCustomObjectAsync(
+                ManifestRenderer.ExternalSecretGroup, ManifestRenderer.ExternalSecretVersion, ns, ManifestRenderer.ExternalSecretPlural, name, ct);
+        }
+        catch (HttpOperationException ex) when (ex.Response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        var json = result is JsonElement element ? element : JsonSerializer.SerializeToElement(result);
+        var metadata = json.GetProperty("metadata");
+        var labels = new Dictionary<string, string>(StringComparer.Ordinal);
+        if (metadata.TryGetProperty("labels", out var l) && l.ValueKind == JsonValueKind.Object)
+            foreach (var label in l.EnumerateObject())
+                labels[label.Name] = label.Value.GetString() ?? "";
+        var finalizers = metadata.TryGetProperty("finalizers", out var f) && f.ValueKind == JsonValueKind.Array
+            ? f.EnumerateArray().Select(x => x.GetString() ?? "").ToList()
+            : [];
+        var deleting = metadata.TryGetProperty("deletionTimestamp", out var d) && d.ValueKind != JsonValueKind.Null;
+        return new ExternalSecretInfo(metadata.GetProperty("uid").GetString()!, labels, deleting, finalizers);
+    }
+
+    private static bool IsManagedBy(IReadOnlyDictionary<string, string> labels, RuntimeContext ctx) =>
+        labels.GetValueOrDefault(KubernetesLabels.ManagedBy) == KubernetesLabels.ManagedByValue
+        && labels.GetValueOrDefault(KubernetesLabels.App) == ctx.AppName
+        && labels.GetValueOrDefault(KubernetesLabels.Environment) == ctx.Environment;
+
+    /// <returns>The object as returned by the API server.</returns>
+    private static async Task<object> ApplyObjectAsync(IKubernetes client, ManifestObject obj, CancellationToken ct)
     {
         var patch = new V1Patch(obj.Body, V1Patch.PatchType.ApplyPatch);
         var ns = obj.Namespace!;
         try
         {
-            switch (obj.Kind)
+            return obj.Kind switch
             {
-                case "Secret":
-                    await client.CoreV1.PatchNamespacedSecretAsync(patch, obj.Name, ns, fieldManager: FieldManager, force: true, cancellationToken: ct);
-                    break;
-                case "Service":
-                    await client.CoreV1.PatchNamespacedServiceAsync(patch, obj.Name, ns, fieldManager: FieldManager, force: true, cancellationToken: ct);
-                    break;
-                case "Deployment":
-                    await client.AppsV1.PatchNamespacedDeploymentAsync(patch, obj.Name, ns, fieldManager: FieldManager, force: true, cancellationToken: ct);
-                    break;
-                case "ExternalSecret":
-                    await client.CustomObjects.PatchNamespacedCustomObjectAsync(
-                        patch, ManifestRenderer.ExternalSecretGroup, ManifestRenderer.ExternalSecretVersion, ns,
-                        ManifestRenderer.ExternalSecretPlural, obj.Name, fieldManager: FieldManager, force: true, cancellationToken: ct);
-                    break;
-                default:
-                    throw new InvalidOperationException($"Don't know how to apply {obj.Id}.");
-            }
+                "Secret" => await client.CoreV1.PatchNamespacedSecretAsync(patch, obj.Name, ns, fieldManager: FieldManager, force: true, cancellationToken: ct),
+                "Service" => await client.CoreV1.PatchNamespacedServiceAsync(patch, obj.Name, ns, fieldManager: FieldManager, force: true, cancellationToken: ct),
+                "Deployment" => await client.AppsV1.PatchNamespacedDeploymentAsync(patch, obj.Name, ns, fieldManager: FieldManager, force: true, cancellationToken: ct),
+                "ExternalSecret" => await client.CustomObjects.PatchNamespacedCustomObjectAsync(
+                    patch, ManifestRenderer.ExternalSecretGroup, ManifestRenderer.ExternalSecretVersion, ns,
+                    ManifestRenderer.ExternalSecretPlural, obj.Name, fieldManager: FieldManager, force: true, cancellationToken: ct),
+                _ => throw new InvalidOperationException($"Don't know how to apply {obj.Id}.")
+            };
         }
         catch (HttpOperationException ex) when (obj.Kind == "ExternalSecret" && ex.Response.StatusCode == HttpStatusCode.NotFound)
         {
@@ -331,10 +491,14 @@ public class KubernetesRuntimePlugin : IRuntimePlugin
                 ManifestRenderer.ExternalSecretGroup, ManifestRenderer.ExternalSecretVersion, ns, ManifestRenderer.ExternalSecretPlural,
                 labelSelector: selector, cancellationToken: ct);
             foreach (var name in CustomObjectNames(externalSecrets))
+            {
+                // If the target Secret is declared again (now opaque), keep it: orphan instead of cascading.
+                var options = keep.Contains($"Secret/{ns}/{name}") ? new V1DeleteOptions { PropagationPolicy = "Orphan" } : background;
                 await DeleteAsync($"ExternalSecret/{ns}/{name}",
                     () => client.CustomObjects.DeleteNamespacedCustomObjectAsync(
                         ManifestRenderer.ExternalSecretGroup, ManifestRenderer.ExternalSecretVersion, ns,
-                        ManifestRenderer.ExternalSecretPlural, name, background, cancellationToken: ct));
+                        ManifestRenderer.ExternalSecretPlural, name, options, cancellationToken: ct));
+            }
         }
         catch (HttpOperationException ex) when (ex.Response.StatusCode == HttpStatusCode.NotFound)
         {
@@ -342,8 +506,11 @@ public class KubernetesRuntimePlugin : IRuntimePlugin
         }
 
         // Secrets owned by another object (for example created by an ExternalSecret) are garbage-collected with their owner.
+        // A Secret that a declared ExternalSecret targets (the workload moved from opaque to external-secrets) is left
+        // for the operator to take over: deleting it would break pods until the operator recreates it.
         var secrets = await client.CoreV1.ListNamespacedSecretAsync(ns, labelSelector: selector, cancellationToken: ct);
-        foreach (var s in secrets.Items.Where(s => IsLive(s) && (s.Metadata.OwnerReferences?.Count ?? 0) == 0))
+        foreach (var s in secrets.Items.Where(s => IsLive(s) && (s.Metadata.OwnerReferences?.Count ?? 0) == 0
+                                                    && !keep.Contains($"ExternalSecret/{ns}/{s.Metadata.Name}")))
             await DeleteAsync($"Secret/{ns}/{s.Metadata.Name}",
                 () => client.CoreV1.DeleteNamespacedSecretAsync(s.Metadata.Name, ns, background, cancellationToken: ct));
 

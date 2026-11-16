@@ -176,7 +176,7 @@ The engine expects:
 - `ApplyAsync` is idempotent, removes objects that earlier applies of this app and environment created and that are no longer declared, waits for the rollout, and throws when the rollout fails. Prune only after success, so a failed rollout leaves the working version in place. The result lists `Applied` and `Pruned`. Non-Deskribe exceptions are wrapped as `Runtime '<name>' failed to deploy: ...`; throw `DeskribeException` for messages that need no wrapping.
 - `GetStatusAsync` and `DestroyAsync` receive an empty `Workloads` list. They must find what to act on from the context identity (app, environment, namespace), as the Kubernetes plugin does with labels. `DestroyAsync` must remove only what this app and environment own.
 - `GenerateArtifactsAsync` chooses the layout. Same path rules as provisioners.
-- `RenderAsync` is part of the interface but the engine does not currently call it.
+- `RenderAsync` is called by `apply` before any provisioner runs, with references still unresolved. It must throw for anything the runtime would refuse (names, settings) and must not require resolved values.
 
 The Kubernetes plugin is the reference implementation: see [system design](system-design.md#the-kubernetes-runtime-plugin) for its behaviour and `src/Plugins/Runtimes/Kubernetes` for the code.
 

@@ -15,8 +15,18 @@ public static class KubernetesLabels
     /// <summary>Namespace annotation, value <c>{app}/{env}</c>: Deskribe created the namespace for that app and environment.</summary>
     public const string OwnerAnnotation = "deskribe.dev/owner";
 
-    /// <summary>Pod-template annotation holding a hash of the workload's effective environment.</summary>
+    /// <summary>
+    /// Pod-template annotation holding a hash of the workload's non-secret environment (plain variables, the
+    /// names of secret variables and how they are delivered). Never derived from secret values.
+    /// </summary>
     public const string EnvHashAnnotation = "deskribe.dev/env-hash";
+
+    /// <summary>
+    /// Pod-template annotation set on apply to the <c>resourceVersion</c> of the workload's opaque Secret, so a
+    /// changed secret value rolls the pods. Server-side apply leaves the resourceVersion unchanged when the
+    /// Secret's content does not change.
+    /// </summary>
+    public const string SecretVersionAnnotation = "deskribe.dev/secret-version";
 
     public static string Owner(string app, string environment) => $"{app}/{environment}";
 
@@ -28,23 +38,23 @@ public static class KubernetesLabels
 internal static partial class KubernetesNames
 {
     // RFC 1035 label: what Service names require.
-    [GeneratedRegex("^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$")]
+    [GeneratedRegex("^[a-z]([-a-z0-9]{0,61}[a-z0-9])?\\z")]
     private static partial Regex Dns1035Label();
 
     // RFC 1123 label: what Namespace names require.
-    [GeneratedRegex("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")]
+    [GeneratedRegex("^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?\\z")]
     private static partial Regex Dns1123Label();
 
-    [GeneratedRegex("^(([A-Za-z0-9][-A-Za-z0-9_.]{0,61})?[A-Za-z0-9])?$")]
+    [GeneratedRegex("^(([A-Za-z0-9][-A-Za-z0-9_.]{0,61})?[A-Za-z0-9])?\\z")]
     private static partial Regex LabelValue();
 
-    [GeneratedRegex("^[-._a-zA-Z0-9]+$")]
+    [GeneratedRegex("^[-._a-zA-Z0-9]+\\z")]
     private static partial Regex ConfigMapKey();
 
-    [GeneratedRegex("^[a-z0-9]([-a-z0-9]{0,13}[a-z0-9])?$")]
+    [GeneratedRegex("^[a-z0-9]([-a-z0-9]{0,13}[a-z0-9])?\\z")]
     private static partial Regex PortName();
 
-    [GeneratedRegex("^[a-zA-Z0-9]([-a-zA-Z0-9_.]*[a-zA-Z0-9])?$")]
+    [GeneratedRegex("^[a-zA-Z0-9]([-a-zA-Z0-9_.]*[a-zA-Z0-9])?\\z")]
     private static partial Regex PathSegment();
 
     public static bool IsValidPortName(string value) =>

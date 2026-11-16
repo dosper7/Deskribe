@@ -204,4 +204,29 @@ public class ApplyTests : IDisposable
         Assert.Contains("'shop-worker'", ex.Message);
         Assert.DoesNotContain("'shop-api'", ex.Message);
     }
+
+    [Fact]
+    public async Task RuntimeRejectionHappensBeforeAnyProvisionerRuns()
+    {
+        _h.Runtime.RenderError = "Invalid runtime setting 'containerPort'";
+        var plan = await _h.PlanAsync(images: Images);
+
+        var ex = await Assert.ThrowsAsync<DeskribeException>(() => _h.Engine.ApplyAsync(plan));
+
+        Assert.Contains("Invalid runtime setting 'containerPort'", ex.Message);
+        Assert.Empty(_h.PgProv.ApplyCalls);
+        Assert.Empty(_h.KafkaProv.ApplyCalls);
+        Assert.Empty(_h.Runtime.ApplyCalls);
+    }
+
+    [Fact]
+    public async Task PreflightRenderSeesOnlyUnresolvedReferences()
+    {
+        var plan = await _h.PlanAsync(images: Images);
+        await _h.Engine.ApplyAsync(plan);
+
+        var w = Assert.Single(Assert.Single(_h.Runtime.RenderCalls).Workloads);
+        Assert.Equal("@resource(postgres).connectionString", w.EnvironmentVariables["DB"]);
+        Assert.DoesNotContain(w.EnvironmentVariables.Values, v => v.Contains("topsecret"));
+    }
 }

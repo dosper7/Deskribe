@@ -65,7 +65,25 @@ public class DnsLabelTests
     [InlineData("api-")]
     [InlineData("pay_api")]
     [InlineData("pay.api")]
+    [InlineData("api\n")]
     public void RejectsInvalidLabels(string value) => Assert.False(DnsLabel.IsValid(value));
+
+    [Theory]
+    [InlineData("1api", false)]
+    [InlineData("api1", true)]
+    [InlineData("api\n", false)]
+    [InlineData("-api", false)]
+    public void ObjectNamesMustStartWithALetter(string value, bool valid) =>
+        Assert.Equal(valid, DnsLabel.IsValidObjectName(value));
+
+    [Theory]
+    [InlineData("500m\n")]
+    [InlineData("1Gi\n")]
+    public void QuantitiesRejectTrailingNewline(string value)
+    {
+        Assert.False(Quantity.TryParseCpu(value, out _));
+        Assert.False(Quantity.TryParseMemory(value, out _));
+    }
 
     [Fact]
     public void RejectsLabelsLongerThan63() 

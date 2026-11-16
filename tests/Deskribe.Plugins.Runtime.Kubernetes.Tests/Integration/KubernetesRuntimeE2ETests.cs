@@ -329,7 +329,328 @@ public sealed class KubernetesRuntimeE2ETests : IDisposable
         finally
         {
             if (installedFake)
+            {
                 await Client.ApiextensionsV1.DeleteCustomResourceDefinitionAsync(ExternalSecretCrdName);
+                await WaitUntil(async () => !await Exists(() => Client.ApiextensionsV1.ReadCustomResourceDefinitionAsync(ExternalSecretCrdName)), TimeSpan.FromSeconds(60));
+            }
+        }
+    }
+
+    [KubernetesE2EFact]
+    public async Task SwitchFromExternalSecretsToOpaque_SecretSurvives_AndBelongsToDeskribeAlone()
+    {
+        await WithExternalSecretCrd(async () =>
+        {
+            var ns = Track(Unique("dsk-es2op"));
+            const string app = "switcher";
+            var plugin = Plugin();
+            var config = Config();
+            config["externalSecretsStore"] = "e2e-store";
+
+            // 1. external-secrets: Deskribe applies the ExternalSecret, the operator stand-in creates the Secret owned by it.
+            var esWorkload = Workload(ns, app, env: new() { ["TOKEN"] = "ignored", ["REGION"] = "eu" },
+                secretKeys: ["TOKEN"], strategy: SecretsStrategies.ExternalSecrets);
+            using (var operatorCts = new CancellationTokenSource(TimeSpan.FromMinutes(3)))
+            {
+                var fakeOperator = FakeOperatorCreatesOwnedSecret(ns, "api-env", "from-the-store", operatorCts.Token);
+                await plugin.ApplyAsync(Context(ns, app, [esWorkload], config));
+                await fakeOperator;
+            }
+            var operatorSecret = await Client.CoreV1.ReadNamespacedSecretAsync("api-env", ns);
+            Assert.Equal("ExternalSecret", Assert.Single(operatorSecret.Metadata.OwnerReferences).Kind);
+            await AssertEnvInPod(ns, (await CurrentPod(ns, "api")).Metadata.Name, "TOKEN", "from-the-store");
+
+            // 2. Switch to opaque while watching that the Secret never disappears.
+            var opaqueWorkload = esWorkload with
+            {
+                SecretsStrategy = SecretsStrategies.Opaque,
+                EnvironmentVariables = new() { ["TOKEN"] = "written-by-deskribe", ["REGION"] = "eu" }
+            };
+            RuntimeApplyResult result;
+            int missing;
+            using (var monitorCts = new CancellationTokenSource())
+            {
+                var monitor = CountSecretAbsences(ns, "api-env", monitorCts.Token);
+                result = await plugin.ApplyAsync(Context(ns, app, [opaqueWorkload], config));
+                // The garbage collector acts asynchronously on dependents of a deleted owner: give it time.
+                await Task.Delay(TimeSpan.FromSeconds(15));
+                await monitorCts.CancelAsync();
+                missing = await monitor;
+            }
+
+            Assert.Contains($"ExternalSecret/{ns}/api-env", result.Pruned);
+            Assert.DoesNotContain($"Secret/{ns}/api-env", result.Pruned);
+            Assert.Equal(0, missing);
+            Assert.False(await Exists(() => Client.CustomObjects.GetNamespacedCustomObjectAsync("external-secrets.io", "v1beta1", ns, "externalsecrets", "api-env")));
+
+            var secret = await Client.CoreV1.ReadNamespacedSecretAsync("api-env", ns);
+            Assert.Null(secret.Metadata.DeletionTimestamp);
+            Assert.Empty(secret.Metadata.OwnerReferences ?? []);
+            Assert.Equal("deskribe", secret.Metadata.Labels["app.kubernetes.io/managed-by"]);
+            Assert.Equal("written-by-deskribe", await SecretValue(ns, "api-env", "TOKEN"));
+            await AssertEnvInPod(ns, (await CurrentPod(ns, "api")).Metadata.Name, "TOKEN", "written-by-deskribe");
+
+            // 3. A restarted pod still finds its Secret.
+            var before = await CurrentPod(ns, "api");
+            await Client.CoreV1.DeleteNamespacedPodAsync(before.Metadata.Name, ns);
+            var restarted = await WaitForReplacementPod(ns, "api", before.Metadata.Name, TimeSpan.FromSeconds(90));
+            await AssertEnvInPod(ns, restarted.Metadata.Name, "TOKEN", "written-by-deskribe");
+
+            // 4. Re-apply is stable and the Secret is now pruned like any opaque Secret once no longer declared.
+            result = await plugin.ApplyAsync(Context(ns, app, [opaqueWorkload], config));
+            Assert.Empty(result.Pruned);
+            result = await plugin.ApplyAsync(Context(ns, app, [opaqueWorkload with { SecretKeys = [] }], config));
+            Assert.Equal([$"Secret/{ns}/api-env"], result.Pruned);
+        });
+    }
+
+    [KubernetesE2EFact]
+    public async Task SwitchFromOpaqueToExternalSecrets_KeepsSecretForTheOperator_UntilNoLongerReferenced()
+    {
+        await WithExternalSecretCrd(async () =>
+        {
+            var ns = Track(Unique("dsk-op2es"));
+            const string app = "switcher";
+            var plugin = Plugin();
+            var config = Config();
+            config["externalSecretsStore"] = "e2e-store";
+
+            var api = Workload(ns, app, env: new() { ["TOKEN"] = "opaque-api" }, secretKeys: ["TOKEN"]);
+            var worker = Workload(ns, app, name: "worker", env: new() { ["TOKEN"] = "opaque-worker" }, secretKeys: ["TOKEN"]);
+            await plugin.ApplyAsync(Context(ns, app, [api, worker], config));
+
+            // 1. Switch to external-secrets. No operator acts yet: the Secrets the pods use must stay.
+            var esApi = api with { SecretsStrategy = SecretsStrategies.ExternalSecrets };
+            var esWorker = worker with { SecretsStrategy = SecretsStrategies.ExternalSecrets };
+            RuntimeApplyResult result;
+            int missingApi, missingWorker;
+            using (var monitorCts = new CancellationTokenSource())
+            {
+                var monitorApi = CountSecretAbsences(ns, "api-env", monitorCts.Token);
+                var monitorWorker = CountSecretAbsences(ns, "worker-env", monitorCts.Token);
+                result = await plugin.ApplyAsync(Context(ns, app, [esApi, esWorker], config));
+                await Task.Delay(TimeSpan.FromSeconds(5));
+                await monitorCts.CancelAsync();
+                missingApi = await monitorApi;
+                missingWorker = await monitorWorker;
+            }
+
+            Assert.Contains($"ExternalSecret/{ns}/api-env", result.Applied);
+            Assert.Empty(result.Pruned);
+            Assert.Equal(0, missingApi);
+            Assert.Equal(0, missingWorker);
+            Assert.Equal("opaque-api", await SecretValue(ns, "api-env", "TOKEN"));
+            var apiPod = await CurrentPod(ns, "api");
+            await AssertEnvInPod(ns, apiPod.Metadata.Name, "TOKEN", "opaque-api");
+            await Client.CoreV1.DeleteNamespacedPodAsync(apiPod.Metadata.Name, ns);
+            await WaitForReplacementPod(ns, "api", apiPod.Metadata.Name, TimeSpan.FromSeconds(90));
+
+            // 2. The operator stand-in takes over api-env (sets itself as controller and writes the store's value).
+            var es = JsonSerializer.SerializeToElement(await Client.CustomObjects.GetNamespacedCustomObjectAsync(
+                "external-secrets.io", "v1beta1", ns, "externalsecrets", "api-env"));
+            var adopted = await Client.CoreV1.ReadNamespacedSecretAsync("api-env", ns);
+            adopted.Metadata.OwnerReferences = [OwnerReferenceTo(es)];
+            adopted.Data = new Dictionary<string, byte[]> { ["TOKEN"] = Encoding.UTF8.GetBytes("from-the-store") };
+            await Client.CoreV1.ReplaceNamespacedSecretAsync(adopted, "api-env", ns);
+
+            result = await plugin.ApplyAsync(Context(ns, app, [esApi, esWorker], config));
+            Assert.Empty(result.Pruned);
+            Assert.True(await Exists(() => Client.CoreV1.ReadNamespacedSecretAsync("worker-env", ns)));
+
+            // 3. Last secret variable removed: once nothing references them, the ExternalSecrets go, the Secret
+            // Deskribe still owns (worker-env) is pruned and the adopted one (api-env) is garbage-collected with its owner.
+            result = await plugin.ApplyAsync(Context(ns, app, [esApi with { SecretKeys = [] }, esWorker with { SecretKeys = [] }], config));
+            Assert.Equal([$"ExternalSecret/{ns}/api-env", $"ExternalSecret/{ns}/worker-env", $"Secret/{ns}/worker-env"], result.Pruned.Order());
+            foreach (var name in new[] { "api", "worker" })
+                Assert.Null((await Client.AppsV1.ReadNamespacedDeploymentAsync(name, ns)).Spec.Template.Spec.Containers.Single().EnvFrom);
+            Assert.False(await Exists(() => Client.CoreV1.ReadNamespacedSecretAsync("worker-env", ns)));
+            await WaitUntil(async () => !await Exists(() => Client.CoreV1.ReadNamespacedSecretAsync("api-env", ns)), TimeSpan.FromSeconds(60));
+        });
+    }
+
+    [KubernetesE2EFact]
+    public async Task PodTemplate_CarriesNothingDerivedFromSecretValues_YetSecretChangesRoll()
+    {
+        var ns = Track(Unique("dsk-hash"));
+        const string app = "hashing";
+        var plugin = Plugin();
+        Dictionary<string, string> Env(string pin) => new() { ["REGION"] = "eu", ["PIN"] = pin };
+        RuntimeContext Ctx(string pin) => Context(ns, app, [Workload(ns, app, env: Env(pin), secretKeys: ["PIN"])]);
+
+        await plugin.ApplyAsync(Ctx("1234"));
+        var deployment = await Client.AppsV1.ReadNamespacedDeploymentAsync("api", ns);
+        var annotations = deployment.Spec.Template.Metadata.Annotations;
+        var secret = await Client.CoreV1.ReadNamespacedSecretAsync("api-env", ns);
+
+        // Exactly two annotations: a hash that does not depend on the secret value, and the Secret's resourceVersion.
+        Assert.Equal(["deskribe.dev/env-hash", "deskribe.dev/secret-version"], annotations.Keys.Order());
+        Assert.Equal(secret.Metadata.ResourceVersion, annotations["deskribe.dev/secret-version"]);
+        var renderedWithOtherPin = TestData.ParseYaml((await plugin.RenderAsync(Ctx("9876"))).Yaml);
+        var renderedAnnotations = (Dictionary<object, object>)TestData.Path(TestData.Doc(renderedWithOtherPin, "Deployment", "api"), "spec.template.metadata.annotations")!;
+        Assert.Equal(["deskribe.dev/env-hash"], renderedAnnotations.Keys.Cast<string>());
+        Assert.Equal(annotations["deskribe.dev/env-hash"], renderedAnnotations["deskribe.dev/env-hash"]);
+        var pod = await CurrentPod(ns, "api");
+        Assert.Equal(DeskribeAnnotations(annotations), DeskribeAnnotations(pod.Metadata.Annotations));
+
+        // Unchanged re-apply: the Secret is not rewritten and no rollout starts.
+        var revision = deployment.Metadata.Annotations["deployment.kubernetes.io/revision"];
+        var result = await plugin.ApplyAsync(Ctx("1234"));
+        Assert.Empty(result.Pruned);
+        deployment = await Client.AppsV1.ReadNamespacedDeploymentAsync("api", ns);
+        Assert.Equal(revision, deployment.Metadata.Annotations["deployment.kubernetes.io/revision"]);
+        Assert.Equal(secret.Metadata.ResourceVersion, (await Client.CoreV1.ReadNamespacedSecretAsync("api-env", ns)).Metadata.ResourceVersion);
+        Assert.Equal(annotations, deployment.Spec.Template.Metadata.Annotations);
+
+        // Changed secret value: rolls, the env hash stays, only the resourceVersion stamp changes.
+        await plugin.ApplyAsync(Ctx("5678"));
+        deployment = await Client.AppsV1.ReadNamespacedDeploymentAsync("api", ns);
+        Assert.NotEqual(revision, deployment.Metadata.Annotations["deployment.kubernetes.io/revision"]);
+        var rolledAnnotations = deployment.Spec.Template.Metadata.Annotations;
+        Assert.Equal(annotations["deskribe.dev/env-hash"], rolledAnnotations["deskribe.dev/env-hash"]);
+        Assert.NotEqual(annotations["deskribe.dev/secret-version"], rolledAnnotations["deskribe.dev/secret-version"]);
+        Assert.Equal((await Client.CoreV1.ReadNamespacedSecretAsync("api-env", ns)).Metadata.ResourceVersion, rolledAnnotations["deskribe.dev/secret-version"]);
+        var rolledPod = await CurrentPod(ns, "api");
+        Assert.NotEqual(pod.Metadata.Name, rolledPod.Metadata.Name);
+        await AssertEnvInPod(ns, rolledPod.Metadata.Name, "PIN", "5678");
+
+        // No secret variables left: the stamp disappears with the Secret.
+        await plugin.ApplyAsync(Context(ns, app, [Workload(ns, app, env: new() { ["REGION"] = "eu" })]));
+        deployment = await Client.AppsV1.ReadNamespacedDeploymentAsync("api", ns);
+        Assert.Equal(["deskribe.dev/env-hash"], deployment.Spec.Template.Metadata.Annotations.Keys);
+    }
+
+    /// <summary>Runs <paramref name="body"/> with the ExternalSecret CRD present, installing a stand-in (and removing it afterwards) if needed.</summary>
+    private async Task WithExternalSecretCrd(Func<Task> body)
+    {
+        var installedFake = false;
+        if (!await Exists(() => Client.ApiextensionsV1.ReadCustomResourceDefinitionAsync(ExternalSecretCrdName)))
+        {
+            await InstallFakeExternalSecretCrd();
+            installedFake = true;
+        }
+
+        try
+        {
+            await body();
+        }
+        finally
+        {
+            if (installedFake)
+            {
+                await Client.ApiextensionsV1.DeleteCustomResourceDefinitionAsync(ExternalSecretCrdName);
+                await WaitUntil(async () => !await Exists(() => Client.ApiextensionsV1.ReadCustomResourceDefinitionAsync(ExternalSecretCrdName)), TimeSpan.FromSeconds(60));
+            }
+        }
+    }
+
+    private static V1OwnerReference OwnerReferenceTo(JsonElement externalSecret)
+    {
+        var metadata = externalSecret.GetProperty("metadata");
+        return new V1OwnerReference
+        {
+            ApiVersion = "external-secrets.io/v1beta1",
+            Kind = "ExternalSecret",
+            Name = metadata.GetProperty("name").GetString(),
+            Uid = metadata.GetProperty("uid").GetString(),
+            Controller = true,
+            BlockOwnerDeletion = true
+        };
+    }
+
+    /// <summary>Operator stand-in: once the ExternalSecret exists, creates its target Secret with an ownerReference to it.</summary>
+    private async Task FakeOperatorCreatesOwnedSecret(string ns, string name, string value, CancellationToken ct)
+    {
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                var es = JsonSerializer.SerializeToElement(await Client.CustomObjects.GetNamespacedCustomObjectAsync(
+                    "external-secrets.io", "v1beta1", ns, "externalsecrets", name, ct));
+                await Client.CoreV1.CreateNamespacedSecretAsync(new V1Secret
+                {
+                    Metadata = new V1ObjectMeta { Name = name, OwnerReferences = [OwnerReferenceTo(es)] },
+                    StringData = new Dictionary<string, string> { ["TOKEN"] = value }
+                }, ns, cancellationToken: ct);
+                return;
+            }
+            catch (HttpOperationException ex) when (ex.Response.StatusCode == HttpStatusCode.NotFound)
+            {
+                await Task.Delay(200, ct);
+            }
+        }
+    }
+
+    /// <summary>Polls until cancelled and returns how often the Secret was missing or being deleted.</summary>
+    private async Task<int> CountSecretAbsences(string ns, string name, CancellationToken ct)
+    {
+        using var client = new k8s.Kubernetes(ClientConfig());
+        var absences = 0;
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var secret = await client.CoreV1.ReadNamespacedSecretAsync(name, ns, cancellationToken: ct);
+                if (secret.Metadata.DeletionTimestamp is not null)
+                    absences++;
+            }
+            catch (HttpOperationException ex) when (ex.Response.StatusCode == HttpStatusCode.NotFound)
+            {
+                absences++;
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+
+            try
+            {
+                await Task.Delay(100, ct);
+            }
+            catch (OperationCanceledException)
+            {
+                break;
+            }
+        }
+
+        if (absences > 0)
+            _output.WriteLine($"Secret/{ns}/{name} was missing or being deleted in {absences} polls");
+        return absences;
+    }
+
+    private async Task<V1Pod> WaitForReplacementPod(string ns, string deploymentName, string oldPod, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (true)
+        {
+            try
+            {
+                var pod = await CurrentPod(ns, deploymentName);
+                if (pod.Metadata.Name != oldPod)
+                    return pod;
+            }
+            catch (InvalidOperationException) when (DateTimeOffset.UtcNow < deadline)
+            {
+            }
+
+            if (DateTimeOffset.UtcNow >= deadline)
+            {
+                var pods = await Client.CoreV1.ListNamespacedPodAsync(ns);
+                var states = pods.Items.SelectMany(p => (p.Status?.ContainerStatuses ?? []).Select(c => $"{p.Metadata.Name}: {c.State?.Waiting?.Reason} {c.State?.Waiting?.Message}"));
+                throw new TimeoutException($"No ready replacement for pod {oldPod}: {string.Join("; ", states)}");
+            }
+            await Task.Delay(1000);
+        }
+    }
+
+    private static async Task WaitUntil(Func<Task<bool>> condition, TimeSpan timeout)
+    {
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (!await condition())
+        {
+            if (DateTimeOffset.UtcNow >= deadline)
+                throw new TimeoutException("Condition not met in time.");
+            await Task.Delay(500);
         }
     }
 
@@ -388,14 +709,20 @@ public sealed class KubernetesRuntimeE2ETests : IDisposable
     private async Task<V1Pod> CurrentPod(string ns, string deploymentName)
     {
         var deployment = await Client.AppsV1.ReadNamespacedDeploymentAsync(deploymentName, ns);
-        var hash = deployment.Spec.Template.Metadata.Annotations["deskribe.dev/env-hash"];
+        var template = DeskribeAnnotations(deployment.Spec.Template.Metadata.Annotations);
         var selector = string.Join(",", deployment.Spec.Selector.MatchLabels.Select(kv => $"{kv.Key}={kv.Value}"));
         var pods = await Client.CoreV1.ListNamespacedPodAsync(ns, labelSelector: selector);
         return pods.Items.Single(p =>
             p.Metadata.DeletionTimestamp is null
-            && p.Metadata.Annotations?.TryGetValue("deskribe.dev/env-hash", out var podHash) == true && podHash == hash
+            && DeskribeAnnotations(p.Metadata.Annotations) == template
             && p.Status?.Conditions?.Any(c => c.Type == "Ready" && c.Status == "True") == true);
     }
+
+    private static string DeskribeAnnotations(IDictionary<string, string>? annotations) =>
+        string.Join("\n", (annotations ?? new Dictionary<string, string>())
+            .Where(a => a.Key.StartsWith("deskribe.dev/", StringComparison.Ordinal))
+            .OrderBy(a => a.Key, StringComparer.Ordinal)
+            .Select(a => $"{a.Key}={a.Value}"));
 
     private async Task AssertEnvInPod(string ns, string pod, string name, string expected)
     {

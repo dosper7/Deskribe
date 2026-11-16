@@ -11,7 +11,12 @@ public interface IRuntimePlugin
 {
     string Name { get; }
 
-    /// <summary>Renders the manifests for <see cref="RuntimeContext.Workloads"/> without touching the runtime.</summary>
+    /// <summary>
+    /// Renders the manifests for <see cref="RuntimeContext.Workloads"/> without touching the runtime.
+    /// The engine also calls this before provisioning, with references still unresolved, so
+    /// it must reject anything the runtime would refuse (names, settings) and must not
+    /// require resolved values.
+    /// </summary>
     Task<RuntimeArtifact> RenderAsync(RuntimeContext ctx, CancellationToken ct = default);
 
     /// <summary>Produces the files a GitOps pipeline would commit (layout is the plugin's decision).</summary>

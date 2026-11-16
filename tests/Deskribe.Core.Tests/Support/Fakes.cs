@@ -102,8 +102,16 @@ public sealed class FakeRuntime : IRuntimePlugin
     public List<RuntimeContext> StatusCalls { get; } = [];
     public List<RuntimeContext> DestroyCalls { get; } = [];
 
-    public Task<RuntimeArtifact> RenderAsync(RuntimeContext ctx, CancellationToken ct = default) =>
-        Task.FromResult(new RuntimeArtifact { Namespace = ctx.Namespace, Yaml = "" });
+    public string? RenderError { get; set; }
+    public List<RuntimeContext> RenderCalls { get; } = [];
+
+    public Task<RuntimeArtifact> RenderAsync(RuntimeContext ctx, CancellationToken ct = default)
+    {
+        RenderCalls.Add(ctx);
+        if (RenderError is not null)
+            throw new InvalidOperationException(RenderError);
+        return Task.FromResult(new RuntimeArtifact { Namespace = ctx.Namespace, Yaml = "" });
+    }
 
     public Task<IReadOnlyList<GeneratedFile>> GenerateArtifactsAsync(RuntimeContext ctx, string outputDir, CancellationToken ct = default)
     {

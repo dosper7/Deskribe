@@ -328,4 +328,29 @@ public class ValidationTests : IDisposable
         AssertError(result, "'qa'");
         AssertError(result, "'nope'");
     }
+
+    [Theory]
+    [InlineData("1payments")]
+    [InlineData("payments-api\n")]
+    public async Task WorkloadNameTheRuntimeWouldRefuseIsRejected(string name)
+    {
+        var result = await ValidateManifest($$"""
+            { "name": {{System.Text.Json.JsonSerializer.Serialize(name)}}, "services": [ { } ] }
+            """);
+        AssertError(result, "not a valid workload name");
+    }
+
+    [Theory]
+    [InlineData(""", "policy": { "limits": { "maxReplicas": 3 } } }""", "policy")]
+    [InlineData(""", "policies": { "limit": { "maxReplicas": 3 } } }""", "limit")]
+    [InlineData(""", "policies": { "limits": { "maxReplica": 3 } } }""", "maxReplica")]
+    [InlineData(""", "policies": { "allowedRegion": ["westeurope"] } }""", "allowedRegion")]
+    public async Task MisspelledPolicyKeysAreRejectedInsteadOfDisablingEnforcement(string suffix, string key)
+    {
+        _h.WriteBase(EngineHarness.DefaultBase.TrimEnd().TrimEnd('}') + suffix);
+        var result = await ValidateManifest("""
+            { "name": "shop", "services": [ { "overrides": { "dev": { "replicas": 9 } } } ] }
+            """);
+        AssertError(result, "base.json", key);
+    }
 }

@@ -11,11 +11,16 @@ namespace Deskribe.Plugins.Provisioner.Terraform;
 /// Applies the platform team's Terraform root module with the Terraform CLI.
 /// Config (provisionerConfigs.terraform): <c>workingDir</c> (required to apply/destroy),
 /// <c>binary</c> (default "terraform"), <c>workspace</c> (template, default "{app}-{env}"),
-/// <c>outputName</c> (default "deskribe_outputs"; a map of resource key → output name → string).
+/// <c>outputName</c> (default "deskribe_outputs"; a map of resource key → output name → string),
+/// <c>lockTimeoutSeconds</c> (default 1800; how long to wait for other Deskribe Terraform operations on the same
+/// workingDir before failing). Operations on one workingDir are serialised (see <see cref="TerraformDirectoryLock"/>)
+/// because the selected workspace is shared state in that directory; this creates an empty
+/// <c>.deskribe-terraform.lock</c> file in workingDir.
 /// </summary>
 public class TerraformProvisioner : IProvisioner
 {
     private const string DefaultOutputName = "deskribe_outputs";
+    private const int DefaultLockTimeoutSeconds = 1800;
     private const int MaxErrorChars = 4000;
 
     public string Name => "terraform";
@@ -24,6 +29,9 @@ public class TerraformProvisioner : IProvisioner
     {
         var settings = ReadSettings(ctx, out var error);
         if (settings is null) return ProvisionResult.Failed(error!);
+
+        using var dirLock = await AcquireLockAsync(settings, ct);
+        if (dirLock.Failure is not null) return dirLock.Failure;
 
         var varFile = WriteVarFile(ctx);
         try
@@ -46,6 +54,9 @@ public class TerraformProvisioner : IProvisioner
     {
         var settings = ReadSettings(ctx, out var error);
         if (settings is null) return ProvisionResult.Failed(error!);
+
+        using var dirLock = await AcquireLockAsync(settings, ct);
+        if (dirLock.Failure is not null) return dirLock.Failure;
 
         var varFile = WriteVarFile(ctx);
         try
@@ -91,7 +102,31 @@ public class TerraformProvisioner : IProvisioner
         return JsonSerializer.Serialize(tfvars, new JsonSerializerOptions { WriteIndented = true });
     }
 
-    private sealed record Settings(string WorkingDir, string Binary, string Workspace, string OutputName);
+    private sealed record Settings(string WorkingDir, string Binary, string Workspace, string OutputName, TimeSpan LockTimeout);
+
+    private sealed class LockHandle(IDisposable? inner, ProvisionResult? failure) : IDisposable
+    {
+        public ProvisionResult? Failure { get; } = failure;
+        public void Dispose() => inner?.Dispose();
+    }
+
+    private static async Task<LockHandle> AcquireLockAsync(Settings s, CancellationToken ct)
+    {
+        try
+        {
+            var handle = await TerraformDirectoryLock.AcquireAsync(s.WorkingDir, s.LockTimeout, ct);
+            return handle is not null
+                ? new LockHandle(handle, null)
+                : new LockHandle(null, ProvisionResult.Failed(
+                    $"Timed out after {s.LockTimeout.TotalSeconds:0}s waiting for another Deskribe Terraform operation on '{s.WorkingDir}' to finish " +
+                    $"(lock file '{TerraformDirectoryLock.LockFileName}'). Retry later or raise lockTimeoutSeconds in provisionerConfigs.terraform."));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new LockHandle(null, ProvisionResult.Failed(
+                $"Could not create or lock '{TerraformDirectoryLock.LockFileName}' in Terraform workingDir '{s.WorkingDir}': {ex.Message}"));
+        }
+    }
 
     private static Settings? ReadSettings(ProvisionContext ctx, out string? error)
     {
@@ -117,7 +152,19 @@ public class TerraformProvisioner : IProvisioner
             workingDir,
             ReadString(ctx, "binary") ?? "terraform",
             workspace,
-            ReadString(ctx, "outputName") ?? DefaultOutputName);
+            ReadString(ctx, "outputName") ?? DefaultOutputName,
+            ReadLockTimeout(ctx));
+    }
+
+    private static TimeSpan ReadLockTimeout(ProvisionContext ctx)
+    {
+        if (ctx.Config.TryGetValue("lockTimeoutSeconds", out var v))
+        {
+            if (v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var n) && n >= 0) return TimeSpan.FromSeconds(Math.Min(n, 2_000_000));
+            if (v.ValueKind == JsonValueKind.String && double.TryParse(v.GetString(), System.Globalization.CultureInfo.InvariantCulture, out var d) && d >= 0)
+                return TimeSpan.FromSeconds(Math.Min(d, 2_000_000));
+        }
+        return TimeSpan.FromSeconds(DefaultLockTimeoutSeconds);
     }
 
     private static string? ReadString(ProvisionContext ctx, string key) =>

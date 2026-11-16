@@ -12,7 +12,7 @@ public static partial class ResourceReferences
     [GeneratedRegex(@"@resource\((?<key>[A-Za-z0-9._-]+)\)\.(?<output>[A-Za-z0-9_]+)")]
     private static partial Regex ReferenceRegex();
 
-    [GeneratedRegex(@"^[A-Za-z0-9._-]+$")]
+    [GeneratedRegex(@"^[A-Za-z0-9._-]+\z")]
     private static partial Regex KeyRegex();
 
     public static Regex Pattern => ReferenceRegex();

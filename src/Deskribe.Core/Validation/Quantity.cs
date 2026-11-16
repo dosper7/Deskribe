@@ -6,10 +6,10 @@ namespace Deskribe.Core.Validation;
 /// <summary>Parses the subset of Kubernetes resource quantities Deskribe accepts.</summary>
 public static partial class Quantity
 {
-    [GeneratedRegex(@"^(?<num>\d+(\.\d+)?|\.\d+)(?<suffix>m?)$")]
+    [GeneratedRegex(@"^(?<num>\d+(\.\d+)?|\.\d+)(?<suffix>m?)\z")]
     private static partial Regex CpuRegex();
 
-    [GeneratedRegex(@"^(?<num>\d+(\.\d+)?|\.\d+)(?<suffix>|k|M|G|T|Ki|Mi|Gi|Ti)$")]
+    [GeneratedRegex(@"^(?<num>\d+(\.\d+)?|\.\d+)(?<suffix>|k|M|G|T|Ki|Mi|Gi|Ti)\z")]
     private static partial Regex MemoryRegex();
 
     /// <summary>CPU in cores: <c>500m</c> = 0.5, <c>2</c> = 2, <c>0.5</c> = 0.5.</summary>
