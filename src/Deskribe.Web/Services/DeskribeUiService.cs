@@ -205,7 +205,7 @@ public class DeskribeUiService
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            _logger.LogWarning("Status for {App}/{Env} unavailable: {Message}", appName, environment, ex.Message);
+            _logger.LogWarning("Status for {App}/{Env} unavailable: {Message}", LogText.Clean(appName), LogText.Clean(environment), LogText.Clean(ex.Message));
             return new StatusResult(null, ex.Message);
         }
     }

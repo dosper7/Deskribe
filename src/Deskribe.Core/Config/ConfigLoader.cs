@@ -85,7 +85,7 @@ public class ConfigLoader
         }
 
         var envPath = Path.Combine(platformPath, "envs", $"{environment}.json");
-        _logger.LogInformation("Loading environment config from {Path}", envPath);
+        _logger.LogInformation("Loading environment config from {Path}", LogText.Clean(envPath));
         var loaded = await ReadJsonAsync<EnvironmentConfig>(envPath, "environment config", ct);
         return loaded with { Name = loaded.Name ?? environment };
     }

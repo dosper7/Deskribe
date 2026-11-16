@@ -59,7 +59,7 @@ public class DeskribeEngine
         Dictionary<string, string>? images = null,
         CancellationToken ct = default)
     {
-        _logger.LogInformation("Planning {Manifest} for environment {Env}", manifestPath, environment);
+        _logger.LogInformation("Planning {Manifest} for environment {Env}", LogText.Clean(manifestPath), LogText.Clean(environment));
 
         var (cfg, loadErrors) = await TryLoadAsync(manifestPath, platformPath, environment, ct);
         if (cfg is null)
@@ -270,7 +270,7 @@ public class DeskribeEngine
     public async Task DestroyAsync(
         string manifestPath, string platformPath, string environment, CancellationToken ct = default)
     {
-        _logger.LogInformation("Destroying {Manifest} in {Env}", manifestPath, environment);
+        _logger.LogInformation("Destroying {Manifest} in {Env}", LogText.Clean(manifestPath), LogText.Clean(environment));
 
         var cfg = await LoadAsync(manifestPath, platformPath, environment, ct);
         var runtime = RequireRuntime(cfg.Platform);
@@ -320,7 +320,7 @@ public class DeskribeEngine
                 "Destroy did not complete:" + Environment.NewLine +
                 string.Join(Environment.NewLine, failures.Select(f => "  - " + f)));
 
-        _logger.LogInformation("Destroy complete for {App} in {Env}", cfg.Manifest.Name, cfg.Environment);
+        _logger.LogInformation("Destroy complete for {App} in {Env}", LogText.Clean(cfg.Manifest.Name), LogText.Clean(cfg.Environment));
     }
 
     // ───────────────────────────── loading ─────────────────────────────

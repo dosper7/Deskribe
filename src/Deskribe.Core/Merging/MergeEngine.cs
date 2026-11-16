@@ -93,7 +93,7 @@ public class MergeEngine
             ?? throw new DeskribeException($"Service in app '{manifest.Name}' has no name; every service needs one when the app has several.");
         var (replicas, cpu, memory) = ResolveSizing(service, defaults, environment);
 
-        _logger.LogDebug("Merged workload {Workload} for {Env}", name, environment);
+        _logger.LogDebug("Merged workload {Workload} for {Env}", LogText.Clean(name), LogText.Clean(environment));
 
         return new WorkloadPlan
         {
